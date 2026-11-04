@@ -11,12 +11,16 @@
 //! keeps state single-owner with no locks and no polling loops.
 
 pub mod classify;
+pub mod cloud;
 pub mod config;
 pub mod db;
+pub mod http_pipeline;
 pub mod hypr;
 pub mod idle;
+pub mod merge;
 pub mod status;
 pub mod suspend;
+pub mod sync;
 pub mod tracker;
 
 use std::ffi::OsString;
@@ -44,6 +48,10 @@ pub enum AtwError {
     Toml(toml::de::Error, PathBuf),
     #[error("database corrupted: {0}")]
     Corrupt(String),
+    #[error("unique constraint failed: {0}")]
+    UniqueConstraint(String),
+    #[error("cloud sync error: {0}")]
+    Http(String),
 }
 
 pub type Result<T> = std::result::Result<T, AtwError>;
@@ -97,6 +105,24 @@ enum Command {
     Status,
     /// Delete activity older than the retention window
     Cleanup,
+    /// Upload pending activity to the cloud now
+    Sync {
+        /// Verify the database URL + token and schema, upload nothing
+        #[arg(long)]
+        check: bool,
+    },
+    /// Change a config value (what the panel's Cloud section uses)
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Set a value: `atw config set sync.url https://…`
+    /// (use "-" as the value to read it from stdin — keeps tokens out of `ps`)
+    Set { key: String, value: String },
 }
 
 /// Shared entry point for the `atw` and `atwd` binaries.
@@ -116,8 +142,12 @@ where
     let result = runtime.block_on(async move {
         match cli.command.unwrap_or(Command::Run) {
             Command::Run => run_daemon(cli.config.as_deref()).await,
-            Command::Status => print_status(),
+            Command::Status => print_status(cli.config.as_deref()),
             Command::Cleanup => run_cleanup(cli.config.as_deref()),
+            Command::Sync { check } => run_sync_cli(cli.config.as_deref(), check),
+            Command::Config { action } => match action {
+                ConfigAction::Set { key, value } => set_config_cli(cli.config.as_deref(), &key, &value),
+            },
         }
     });
     drop(runtime);
@@ -150,9 +180,21 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
 
     let mut db = Db::open(&db_path)?;
 
+    // Sync is "active" when the user switched it on and configured a URL.
+    // Retention only deletes rows the cloud has acknowledged in that case;
+    // otherwise (local-only mode) old rows are deleted unconditionally.
+    let sync_active = config.sync.enabled && config.sync.is_configured();
+    let mut sync_status = status::SyncStatus {
+        enabled: config.sync.enabled,
+        configured: config.sync.is_configured(),
+        last_sync: sync::read_record(&dirs.state).last_sync,
+        pending: 0,
+        last_error: sync::read_record(&dirs.state).last_error,
+    };
+
     // Retention on startup: covers machines that were off for a while.
     let cutoff = config::retention_cutoff_date(config.tracking.retention_days);
-    match db.retain(&cutoff) {
+    match db.retain(&cutoff, sync_active) {
         Ok(n) if n > 0 => tracing::info!(target: "atw", deleted = n, cutoff = %cutoff, "retention cleanup"),
         Ok(_) => {}
         Err(e) => tracing::warn!(target: "atw", error = %e, "retention cleanup failed"),
@@ -175,9 +217,17 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
     // Write a status snapshot immediately so the UI has data before the
     // first event or flush arrives.
     let now = unix_now();
-    write_status(&db, &tracker, &status_path, now);
+    write_status(&db, &tracker, &status_path, now, &sync_status);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Input>(64);
+
+    // The sync task runs off the owner task with its own SQLite connection
+    // (WAL), so network waits never stall tracking. This atomic carries the
+    // currently-open row id so sync never uploads a segment that is still
+    // growing.
+    let open_row_shared = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1));
+    let open_row_path = dirs.state.join("open-row");
+    let (sync_now_tx, mut sync_now_rx) = tokio::sync::mpsc::channel::<()>(4);
 
     // Hyprland events (with automatic reconnect + re-snapshot).
     tokio::spawn(hypr::run_event_listener(tx.clone()));
@@ -203,6 +253,94 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
         });
     }
 
+    // Cloud sync: every configured interval (default 10 min), with
+    // exponential backoff after failures, plus immediate triggers from the
+    // panel's "Sync now" button (SIGUSR1 → Input::Sync → sync_now_rx).
+    {
+        let tx = tx.clone();
+        let config = config.clone();
+        let data_dir = dirs.data.clone();
+        let state_dir = dirs.state.clone();
+        let open_row = open_row_shared.clone();
+        tokio::spawn(async move {
+            let interval =
+                std::time::Duration::from_secs(config.sync.effective_interval() as u64);
+            // Give the first flush a moment to close rows before uploading.
+            let mut delay = std::time::Duration::from_secs(30);
+            let mut failures: u32 = 0;
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    Some(_) = sync_now_rx.recv() => {}
+                }
+                if !config.sync.enabled || !config.sync.is_configured() {
+                    let _ = tx
+                        .send(Input::SyncDone {
+                            ok: true,
+                            error: None,
+                            pending: 0,
+                            last_sync: None,
+                        })
+                        .await;
+                    delay = interval;
+                    continue;
+                }
+                let open_id = open_row.load(std::sync::atomic::Ordering::Relaxed);
+                let cfg = config.clone();
+                let data = data_dir.clone();
+                let state = state_dir.clone();
+                let report = match tokio::task::spawn_blocking(move || {
+                    sync::sync_once(&cfg, &data, &state, open_id)
+                })
+                .await
+                {
+                    Ok(report) => report,
+                    Err(e) => sync::SyncReport {
+                        uploaded: 0,
+                        batches: 0,
+                        pending: 0,
+                        error: Some(format!("sync task failed: {e}")),
+                        skipped: false,
+                    },
+                };
+                let failed = report.error.is_some();
+                let last_sync = if !failed && !report.skipped {
+                    Some(chrono::Local::now().to_rfc3339())
+                } else {
+                    None
+                };
+                if let Some(err) = &report.error {
+                    tracing::warn!(target: "atw", error = %err, "cloud sync failed");
+                } else if !report.skipped {
+                    tracing::debug!(
+                        target: "atw",
+                        uploaded = report.uploaded,
+                        batches = report.batches,
+                        pending = report.pending,
+                        "cloud sync ok"
+                    );
+                }
+                let _ = tx
+                    .send(Input::SyncDone {
+                        ok: !failed,
+                        error: report.error.clone(),
+                        pending: report.pending,
+                        last_sync,
+                    })
+                    .await;
+                if failed {
+                    failures = failures.saturating_add(1);
+                    delay = std::time::Duration::from_secs(sync::backoff_seconds(
+                        failures.saturating_sub(1),
+                    ));
+                } else {
+                    failures = 0;
+                    delay = interval;
+                }
+            }
+        });
+    }
+
     // Retention tick at local midnight (covers the running session; the
     // startup pass covers machines that were off).
     {
@@ -220,19 +358,27 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
         });
     }
 
-    // Graceful shutdown on SIGTERM / SIGINT.
+    // Graceful shutdown on SIGTERM / SIGINT; manual sync on SIGUSR1.
     {
         let tx = tx.clone();
         tokio::spawn(async move {
             use tokio::signal::unix::{signal, SignalKind};
             let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
             let mut int = signal(SignalKind::interrupt()).expect("SIGINT handler");
-            tokio::select! {
-                _ = term.recv() => {},
-                _ = int.recv() => {},
+            let mut usr1 = signal(SignalKind::user_defined1()).expect("SIGUSR1 handler");
+            loop {
+                tokio::select! {
+                    _ = term.recv() => {},
+                    _ = int.recv() => {},
+                    _ = usr1.recv() => {
+                        let _ = tx.send(Input::Sync).await;
+                        continue;
+                    }
+                }
+                tracing::info!(target: "atw", "shutdown signal received");
+                let _ = tx.send(Input::Shutdown).await;
+                break;
             }
-            tracing::info!(target: "atw", "shutdown signal received");
-            let _ = tx.send(Input::Shutdown).await;
         });
     }
 
@@ -252,37 +398,76 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
             tracker.handle(Input::Resume, now);
         }
         match input {
+            Input::Sync => {
+                // Make freshly closed segments available, then ask the sync
+                // task to run right away (manual "Sync now").
+                if let Err(e) = flush_once(
+                    &mut db,
+                    &mut tracker,
+                    now,
+                    &open_row_path,
+                    &open_row_shared,
+                ) {
+                    tracing::error!(target: "atw", error = %e, "pre-sync flush failed");
+                }
+                let _ = sync_now_tx.try_send(());
+            }
+            Input::SyncDone {
+                ok,
+                error,
+                pending,
+                last_sync,
+            } => {
+                sync_status.last_error = if ok { None } else { error };
+                if let Some(ts) = last_sync {
+                    sync_status.last_sync = Some(ts);
+                }
+                sync_status.pending = pending as u64;
+                write_status(&db, &tracker, &status_path, now, &sync_status);
+            }
             Input::Flush => {
-                if let Err(e) = flush_once(&mut db, &mut tracker, now) {
+                if let Err(e) = flush_once(
+                    &mut db,
+                    &mut tracker,
+                    now,
+                    &open_row_path,
+                    &open_row_shared,
+                ) {
                     tracing::error!(target: "atw", error = %e, "flush failed");
                 }
-                write_status(&db, &tracker, &status_path, now);
+                write_status(&db, &tracker, &status_path, now, &sync_status);
             }
             Input::Retention => {
                 let cutoff = config::retention_cutoff_date(config.tracking.retention_days);
-                match db.retain(&cutoff) {
+                match db.retain(&cutoff, sync_active) {
                     Ok(n) if n > 0 => {
                         tracing::info!(target: "atw", deleted = n, cutoff = %cutoff, "midnight retention")
                     }
                     Ok(_) => {}
                     Err(e) => tracing::error!(target: "atw", error = %e, "midnight retention failed"),
                 }
-                write_status(&db, &tracker, &status_path, now);
+                write_status(&db, &tracker, &status_path, now, &sync_status);
             }
             Input::Shutdown => {
                 // Ends the open segment, then flushes everything.
                 tracker.handle(input, now);
-                if let Err(e) = flush_once(&mut db, &mut tracker, now) {
+                if let Err(e) = flush_once(
+                    &mut db,
+                    &mut tracker,
+                    now,
+                    &open_row_path,
+                    &open_row_shared,
+                ) {
                     tracing::error!(target: "atw", error = %e, "final flush failed");
                 }
                 let _ = db.checkpoint();
-                write_status(&db, &tracker, &status_path, now);
+                write_status(&db, &tracker, &status_path, now, &sync_status);
                 tracing::info!(target: "atw", "bye");
                 break;
             }
             other => {
                 tracker.handle(other, now);
-                write_status(&db, &tracker, &status_path, now);
+                write_status(&db, &tracker, &status_path, now, &sync_status);
             }
         }
     }
@@ -290,19 +475,39 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
 }
 
 /// Write all currently pending data to SQLite in one transaction.
-fn flush_once(db: &mut Db, tracker: &mut Tracker, now: i64) -> Result<()> {
+fn flush_once(
+    db: &mut Db,
+    tracker: &mut Tracker,
+    now: i64,
+    open_row_path: &Path,
+    open_row_shared: &std::sync::atomic::AtomicI64,
+) -> Result<()> {
     let open = tracker.open_segment().cloned();
     let mut open_row = tracker.open_row();
     let finalize = tracker.take_finalize();
     let pending = tracker.take_pending();
     db.flush(open.as_ref(), &mut open_row, &finalize, &pending, now, &local_date_string)?;
     tracker.set_open_row(open_row);
+    // Persist the open row id: the background sync task reads the atomic,
+    // and `atw sync` (which cannot see daemon memory) reads the file.
+    let id = tracker.open_row().map(|(id, _)| id).unwrap_or(-1);
+    open_row_shared.store(id, std::sync::atomic::Ordering::Relaxed);
+    if let Some(parent) = open_row_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(open_row_path, format!("{id}\n"));
     tracing::debug!(target: "atw", finalized = finalize.len(), inserted = pending.len(), "flushed");
     Ok(())
 }
 
 /// Rebuild the status file from the database plus in-memory state.
-fn write_status(db: &Db, tracker: &Tracker, path: &Path, now: i64) {
+fn write_status(
+    db: &Db,
+    tracker: &Tracker,
+    path: &Path,
+    now: i64,
+    sync_status: &status::SyncStatus,
+) {
     let date = local_date_string(now);
     let mut today: std::collections::BTreeMap<String, u64> = match db.today_totals(&date) {
         Ok(rows) => rows.into_iter().collect(),
@@ -321,10 +526,40 @@ fn write_status(db: &Db, tracker: &Tracker, path: &Path, now: i64) {
         };
     // Unflushed time is only in memory — add it to both summaries (today is
     // always part of the week window).
-    for (display, seconds) in tracker.today_pieces(now) {
+    let today_pieces = tracker.today_pieces(now);
+    for (display, seconds) in &today_pieces {
         *today.entry(display.clone()).or_insert(0) += seconds;
-        *week.entry(display).or_insert(0) += seconds;
+        *week.entry(display.clone()).or_insert(0) += seconds;
     }
+
+    // History for the panel's on-demand view: 7 days, top 4 apps per day.
+    let mut history: Vec<status::DayStatus> = db
+        .history(&config::retention_cutoff_date(7), 4)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| status::DayStatus {
+            date: d.date,
+            total_seconds: d.total_seconds,
+            apps: d.apps.into_iter().collect(),
+        })
+        .collect();
+    if let Some(today_entry) = history.first_mut() {
+        if today_entry.date == date {
+            for (display, seconds) in &today_pieces {
+                *today_entry.apps.entry(display.clone()).or_insert(0) += seconds;
+                today_entry.total_seconds += seconds;
+            }
+        }
+    }
+
+    // Row count waiting for the cloud (the open segment is not a candidate).
+    let open_id = tracker.open_row().map(|(id, _)| id).unwrap_or(-1);
+    let pending = db.pending_count(open_id).unwrap_or(0) as u64;
+    let sync = status::SyncStatus {
+        pending,
+        ..sync_status.clone()
+    };
+
     let status = Status {
         version: STATUS_VERSION,
         active: tracker.active_display(),
@@ -332,6 +567,8 @@ fn write_status(db: &Db, tracker: &Tracker, path: &Path, now: i64) {
         today_total_seconds: today.values().sum(),
         today,
         week,
+        history,
+        sync,
         updated_at: chrono::Local::now().to_rfc3339(),
     };
     if let Err(e) = write_status_file(path, &status) {
@@ -352,8 +589,8 @@ fn seconds_until_next_midnight() -> u64 {
 }
 
 /// `atw status` — print the status JSON if the daemon has produced one.
-pub fn print_status() -> Result<()> {
-    let config = config::load_or_init(None)?;
+pub fn print_status(config_path: Option<&Path>) -> Result<()> {
+    let config = config::load_or_init(config_path)?;
     let path = config.resolved_dirs().state.join("status.json");
     match std::fs::read_to_string(&path) {
         Ok(text) => {
@@ -375,9 +612,86 @@ pub fn run_cleanup(config_path: Option<&Path>) -> Result<()> {
     std::fs::create_dir_all(&dirs.data)?;
     let db = Db::open(&dirs.data.join("activity.db"))?;
     let cutoff = config::retention_cutoff_date(config.tracking.retention_days);
-    let deleted = db.retain(&cutoff)?;
+    let sync_active = config.sync.enabled && config.sync.is_configured();
+    let deleted = db.retain(&cutoff, sync_active)?;
     let _ = db.checkpoint();
     println!("deleted {deleted} records older than {cutoff}");
+    Ok(())
+}
+
+/// Open row id persisted by the daemon at flush time; `-1` when unknown.
+fn read_open_row(state_dir: &Path) -> i64 {
+    std::fs::read_to_string(state_dir.join("open-row"))
+        .ok()
+        .and_then(|t| t.trim().parse::<i64>().ok())
+        .unwrap_or(-1)
+}
+
+/// `atw sync [--check]` — upload pending activity (or verify credentials).
+pub fn run_sync_cli(config_path: Option<&Path>, check: bool) -> Result<()> {
+    let config = config::load_or_init(config_path)?;
+    if check {
+        let message = sync::check_connection(&config)?;
+        println!("{message}");
+        return Ok(());
+    }
+    let dirs = config.resolved_dirs();
+    std::fs::create_dir_all(&dirs.data)?;
+    std::fs::create_dir_all(&dirs.state)?;
+    if !config.sync.enabled {
+        println!("cloud sync is switched off (sync.enabled = false)");
+        return Ok(());
+    }
+    if !config.sync.is_configured() {
+        println!("cloud sync is not configured yet — paste the database URL and token in the panel's Cloud section");
+        return Ok(());
+    }
+    let open_row = read_open_row(&dirs.state);
+    let report = sync::sync_once(&config, &dirs.data, &dirs.state, open_row);
+    if let Some(err) = &report.error {
+        eprintln!("sync failed: {err}");
+        return Err(AtwError::Http(err.clone()));
+    }
+    if report.skipped {
+        println!("cloud sync is switched off");
+        return Ok(());
+    }
+    let record = sync::read_record(&dirs.state);
+    println!(
+        "synced {} segment(s) in {} batch(es); {} pending{}",
+        report.uploaded,
+        report.batches,
+        report.pending,
+        record
+            .last_sync
+            .map(|t| format!("; last sync {t}"))
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// `atw config set <section.key> <value>` — what the panel's Cloud section
+/// uses. `-` as the value reads it from stdin (keeps tokens out of `ps`).
+pub fn set_config_cli(config_path: Option<&Path>, key: &str, value: &str) -> Result<()> {
+    let path = config_path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(config::default_config_path);
+    // First run: create the default file (with comments) before editing it,
+    // so the panel's Connect button works on a fresh install.
+    if !path.exists() {
+        let _ = config::load_or_init(Some(&path))?;
+    }
+    let value = if value == "-" {
+        sync::read_stdin_trimmed()?
+    } else {
+        value.to_string()
+    };
+    config::set_value(&path, key, &value)?;
+    // Validate the whole file parses as a Config after the edit.
+    let text = std::fs::read_to_string(&path)?;
+    let _parsed: config::Config =
+        toml::from_str(&text).map_err(|e| AtwError::Toml(e, path.clone()))?;
+    println!("{key} updated");
     Ok(())
 }
 

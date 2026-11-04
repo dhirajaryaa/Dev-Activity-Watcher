@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Dev Activity Watcher (atw) — installer.
 #
-# Builds the release binary, installs it to ~/.local/bin, installs the
-# systemd user unit, installs the Omarchy shell plugin, and enables both.
-# Everything is local: no network calls, no telemetry, data stays in
-# ~/.local/share/atw.
+# Builds the release binaries, installs them to ~/.local/bin, installs the
+# systemd user units, installs the Omarchy shell plugin, and enables them.
+# Tracking is local-first: data stays in ~/.local/share/atw. Cloud sync is
+# optional and only talks to the Turso database you configure in the panel.
 set -euo pipefail
 
 ATW_HOME="${ATW_HOME:-$HOME/Work/atw}"
@@ -20,10 +20,12 @@ cargo build --release --manifest-path "$ATW_HOME/Cargo.toml"
 echo "==> Installing daemon to $BIN_DST"
 mkdir -p "$HOME/.local/bin"
 install -m 755 "$ATW_HOME/target/release/atwd" "$BIN_DST"
+install -m 755 "$ATW_HOME/target/release/atw"  "$HOME/.local/bin/atw"
 
-echo "==> Installing systemd user unit"
+echo "==> Installing systemd user units"
 mkdir -p "$HOME/.config/systemd/user"
 install -m 644 "$ATW_HOME/packaging/atwd.service" "$UNIT_DST"
+install -m 644 "$ATW_HOME/packaging/atw-sync.service" "$HOME/.config/systemd/user/atw-sync.service"
 systemctl --user daemon-reload
 systemctl --user enable --now atwd.service
 
@@ -44,4 +46,5 @@ echo
 echo "Installed. The bar widget appears after the shell reloads (a few seconds)."
 echo "  daemon : systemctl --user status atwd"
 echo "  config : ~/.config/atw/config.toml  (restart atwd after editing)"
-echo "  data   : ~/.local/share/atw/activity.db  (local only, 7-day retention)"
+echo "  data   : ~/.local/share/atw/activity.db  (7-day local retention)"
+echo "  cloud  : optional — open the panel and paste your Turso URL + token"

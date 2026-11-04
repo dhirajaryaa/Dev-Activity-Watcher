@@ -340,3 +340,121 @@ unit-tested via the clock-drift detector.
 ### Test results (final)
 
 - `cargo test`: **60 passed, 0 failed**.
+
+---
+
+## Phase 7 — Optional cloud sync, multi-device, panel setup (2026-11-04)
+
+The user extended the product: keep the local engine untouched, but add
+**optional sync to a Turso database they own**, set up entirely from the panel
+(paste URL + token, no Turso CLI, no OAuth), aggregate several machines
+correctly, and keep the bar/panel minimal. Cloud is on by default but does
+nothing until a URL and token exist.
+
+### Architecture (and why)
+
+| Piece | Choice | Why, in plain language |
+|---|---|---|
+| Local storage | **rusqlite** (unchanged) | The tracker must work offline and own its schema; no rewrite risk. |
+| Cloud client | hand-rolled `/v2/pipeline` over `ureq` + rustls | The `turso` crate mirrors the whole database (it propagates local deletes) and `diesel-libsql` is immature. The Hrana protocol is small: one POST with `BEGIN` + statements, a second with `COMMIT`/`ROLLBACK` + `close`, held together by a baton. We already hand-roll Hyprland; same philosophy. |
+| Backends | `CloudBackend` trait: `LocalBackend` (in-memory rusqlite, used by tests) + `HttpBackend` (production) | All merge/retention logic is testable without a network or account. |
+| Sync loop | separate task, own SQLite connection (WAL), blocking HTTP inside `spawn_blocking` | A slow network can never stall event handling or the open segment. |
+| Merge oracle | `merge.rs` (Rust interval union) + SQL window functions in the cloud transaction, cross-checked by tests | Two independent implementations of the hard part, agreeing on fixtures. |
+
+### Upload transaction (all-or-nothing)
+
+One `/v2/pipeline` request carries `BEGIN` plus:
+
+1. insert the batch id (duplicate → rollback → treat as **already applied**);
+2. `INSERT OR IGNORE` every segment (stable UUID primary key);
+3. for each affected date: delete and recompute `daily_app` rows from the
+   **union of intervals** using a window-function sweep;
+4. recompute `daily_unique` (global union + `overlap_seconds`);
+5. upsert the device row and `meta`;
+
+then a second request commits (or rolls back) and closes the baton. A crash
+mid-transaction is rolled back by the server when the connection times out;
+the daemon's next attempt uses the *same deterministic batch id*, so a retry
+after "commit succeeded, ack lost" is recognised as a duplicate and only the
+local `synced_at` marker is written.
+
+### Idempotency and concurrency
+
+- Batch id = FNV-1a 128-bit over `device_id` + sorted segment UUIDs. Stable
+  across retries and upgrades (the algorithm is ours, not a crate's).
+- Segment UUIDs are UUID v7 generated at insert time; `INSERT OR IGNORE` makes
+  re-uploads harmless.
+- Five concurrent devices were simulated in tests: the transaction serialises
+  on the server, and recompute-from-raw is commutative, so late batches simply
+  recompute the affected day again.
+- Local rows are marked synced only after the cloud ack:
+  `UPDATE ... WHERE synced_at IS NULL` (a second ack of the same batch is a
+  no-op). Rows are never deleted before that ack.
+
+### Correctness rules for multi-device time
+
+- **Never sum overlapping durations.** Per-app totals come from the interval
+  union; `combined_seconds` is kept separately for ranking.
+- Overlap **between different apps/devices** is attributed to the explicit
+  `(overlapping)` category via `daily_unique.overlap_seconds`; it is not
+  silently added to any app and not folded into `unique_active_seconds`.
+- `unique_active_seconds` is the union of everything, so ≤ 86 400 per day —
+  no `MIN(…, 86400)` clamp masking bad data.
+- Clock jumps backwards are handled: a segment ending before it starts is
+  rejected at the tracker boundary; overlapping segments from a clock jump are
+  merged, never double-counted (regression test).
+
+### Retention
+
+- Local: 7 days, but with sync active only rows with `synced_at IS NOT NULL`
+  are deleted (unsynced data survives any retention pass).
+- Cloud: raw segments older than `cloud_retention_days` (90) are pruned once a
+  day on successful contact; `daily_app`/`daily_unique` are preserved, so
+  long-range charts keep working after the raw rows are gone.
+
+### Panel and onboarding
+
+- `Panel.qml` now defaults to **Today**; a small **History** button swaps in
+  the last 7 days (top two apps per day) on demand.
+- **Cloud sync** section: toggle (default ON), and — only until configured —
+  URL + token fields and a **Connect** button. Connect writes the config
+  through `atw config set` (token piped on stdin, so it never appears in
+  `ps`), then restarts `atwd` so the change applies immediately.
+- Once configured: last-sync time, pending count, and **Sync now**.
+- Bar: right-click cycles icon → icon + hours → icon + hours + minutes,
+  persisted as the `barFormat` enum setting; hours are shown as `1h`, not
+  `1h 02m`.
+
+### systemd hardening change (explained)
+
+`PrivateNetwork=true` and `IPAddressDeny=any` had to go: they make *any*
+outbound connection impossible, which contradicts a runtime-toggleable sync
+feature. Everything else stays (`ProtectSystem=strict`,
+`ProtectHome=read-only`, `ReadWritePaths` limited to the three atw dirs,
+`NoNewPrivileges`, `RestrictNamespaces`, `LockPersonality`,
+`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`). The daemon opens no
+listening socket and connects only when sync is enabled and configured.
+`PRIVACY.md` documents this trade-off explicitly.
+
+### New CLI surface
+
+```
+atw sync                 # upload pending rows now (also called by atw-sync.service)
+atw sync --check         # verify URL/token/schema, upload nothing
+atw config set <key> <value|->   # "-" reads the value from stdin
+```
+
+`atwd` also handles `SIGUSR1` as "flush + sync now" (used by the panel and by
+`systemctl --user kill --signal=USR1 atwd`). `status.json` schema is now
+version 2 and carries `history` (7 days, top 4 apps) plus a `sync` block
+(`enabled`, `configured`, `pending`, `last_sync`, `last_error`).
+
+### Test results (2026-11-04, final)
+
+- `cargo test`: **104 passed, 0 failed** — includes merge fixtures (overlap,
+  late arrival, clock jump), duplicate-batch retry, offline resumability,
+  retention cutoff, read-only portfolio queries, and a 5-thread concurrent
+  upload test.
+- `atw config set` tests cover comment preservation, adding a missing
+  `[sync]`, and refusing invalid values without touching the file.
+

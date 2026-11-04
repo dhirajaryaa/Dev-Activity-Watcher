@@ -1,5 +1,5 @@
 [Unit]
-Description=Dev Activity Watcher daemon (atwd) — local-only developer activity tracking
+Description=Dev Activity Watcher daemon (atwd) — local-first developer activity tracking
 Documentation=file://%h/Work/atw/README.md
 PartOf=graphical-session.target
 After=graphical-session.target
@@ -14,13 +14,17 @@ RestartSec=5
 # reach the session's runtime directory (same pattern as voxtype.service).
 Environment=XDG_RUNTIME_DIR=%t
 
-# Hardening: nothing here needs authority or networking.
+# Hardening: nothing here needs authority. Network is allowed because
+# cloud sync is optional and switched on/off at runtime from the panel —
+# the daemon only ever connects to the one Turso URL the user configured.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.local/share/atw %h/.local/state/atw %h/.config/atw
-PrivateNetwork=true
-IPAddressDeny=any
+# No listening sockets, only client connections.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
 
 [Install]
 WantedBy=graphical-session.target

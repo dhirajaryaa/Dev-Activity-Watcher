@@ -36,6 +36,15 @@ pub enum Input {
     Retention,
     /// Periodic flush tick (handled by the daemon, ignored by the machine).
     Flush,
+    /// Cloud sync tick or manual trigger (handled by the daemon).
+    Sync,
+    /// A background cloud sync finished (handled by the daemon).
+    SyncDone {
+        ok: bool,
+        error: Option<String>,
+        pending: usize,
+        last_sync: Option<String>,
+    },
     /// Graceful shutdown (handled by the daemon, ignored by the machine).
     Shutdown,
 }
@@ -170,7 +179,7 @@ impl Tracker {
             // post-resume AFK time is not attributed to any app.
             Input::Resume if !self.idle && !self.locked => self.maybe_reopen(now),
             Input::Resume => {}
-            Input::Flush | Input::Retention => {}
+            Input::Flush | Input::Retention | Input::Sync | Input::SyncDone { .. } => {}
             // Shutdown ends the open segment so the final flush is complete.
             Input::Shutdown => self.close_current(now),
         }

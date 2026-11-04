@@ -13,10 +13,10 @@ echo "==> Stopping the daemon"
 systemctl --user disable --now atwd.service 2>/dev/null || true
 pkill -x atwd 2>/dev/null || true
 
-echo "==> Removing unit, binary, and plugin"
-rm -f "$HOME/.config/systemd/user/atwd.service"
+echo "==> Removing units, binaries, and plugin"
+rm -f "$HOME/.config/systemd/user/atwd.service" "$HOME/.config/systemd/user/atw-sync.service"
 systemctl --user daemon-reload
-rm -f "$HOME/.local/bin/atwd"
+rm -f "$HOME/.local/bin/atwd" "$HOME/.local/bin/atw"
 omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || true
 rm -rf "$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 

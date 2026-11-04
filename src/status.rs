@@ -13,7 +13,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 
-pub const STATUS_VERSION: u32 = 1;
+pub const STATUS_VERSION: u32 = 2;
+
+/// One day of history for the panel's optional history view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DayStatus {
+    pub date: String,
+    pub total_seconds: u64,
+    /// Top apps that day, sorted by usage.
+    pub apps: BTreeMap<String, u64>,
+}
+
+/// Cloud sync state for the panel (last sync, pending rows, errors).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SyncStatus {
+    /// Whether sync is switched on in config.
+    pub enabled: bool,
+    /// Whether a database URL + token are configured.
+    pub configured: bool,
+    /// RFC 3339 timestamp of the last successful sync, if any.
+    pub last_sync: Option<String>,
+    /// Rows waiting for upload right now.
+    pub pending: u64,
+    /// Last sync error message, if the last attempt failed.
+    pub last_error: Option<String>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Status {
@@ -29,6 +53,12 @@ pub struct Status {
     pub today: BTreeMap<String, u64>,
     /// Per-application seconds over the last 7 days (top apps only).
     pub week: BTreeMap<String, u64>,
+    /// Per-day history, newest first (panel shows it only on demand).
+    #[serde(default)]
+    pub history: Vec<DayStatus>,
+    /// Cloud sync state.
+    #[serde(default)]
+    pub sync: SyncStatus,
     /// RFC 3339 timestamp of when this snapshot was written.
     pub updated_at: String,
 }
@@ -72,6 +102,18 @@ mod tests {
                 ("Firefox".to_string(), 18_400),
                 ("Visual Studio Code".to_string(), 52_300),
             ]),
+            history: vec![DayStatus {
+                date: "2026-11-04".to_string(),
+                total_seconds: 11_520,
+                apps: BTreeMap::from([("Visual Studio Code".to_string(), 9120)]),
+            }],
+            sync: SyncStatus {
+                enabled: true,
+                configured: false,
+                last_sync: None,
+                pending: 0,
+                last_error: None,
+            },
             updated_at: "2026-11-04T10:00:00+05:45".to_string(),
         };
         write_status_file(&path, &status).unwrap();

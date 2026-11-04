@@ -15,7 +15,7 @@ use rusqlite::{params, Connection};
 use crate::tracker::Segment;
 use crate::{AtwError, Result};
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 pub struct Db {
     conn: Connection,
@@ -85,15 +85,17 @@ impl Db {
         let tx = self.conn.transaction()?;
 
         for (row_id, segment, _unflushed) in finalize {
-            // Rewrite the row with the final, date-split segment.
+            // Rewrite the row with the final, date-split segment. Each split
+            // piece becomes its own immutable cloud segment with a fresh UUID
+            // (the open row's UUID was never uploaded — only closed rows sync).
             tx.execute("DELETE FROM activity WHERE id = ?1", params![row_id])?;
             if segment.duration() > 0 {
                 for piece in crate::tracker::split_by_date(segment, date_of) {
                     if piece.duration() > 0 {
                         tx.execute(
                             "INSERT INTO activity
-                             (application_class, display_name, category, started_at, ended_at, duration_seconds, date)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                             (application_class, display_name, category, started_at, ended_at, duration_seconds, date, segment_uuid)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                             params![
                                 piece.class,
                                 piece.display_name,
@@ -101,7 +103,8 @@ impl Db {
                                 piece.started_at,
                                 piece.ended_at,
                                 piece.duration(),
-                                date_of(piece.started_at)
+                                date_of(piece.started_at),
+                                uuid::Uuid::now_v7().to_string()
                             ],
                         )?;
                     }
@@ -133,8 +136,8 @@ impl Db {
                     if elapsed > 0 {
                         tx.execute(
                             "INSERT INTO activity
-                             (application_class, display_name, category, started_at, ended_at, duration_seconds, date)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                             (application_class, display_name, category, started_at, ended_at, duration_seconds, date, segment_uuid)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                             params![
                                 segment.class,
                                 segment.display_name,
@@ -142,7 +145,8 @@ impl Db {
                                 segment.started_at,
                                 now,
                                 elapsed,
-                                date_of(segment.started_at)
+                                date_of(segment.started_at),
+                                uuid::Uuid::now_v7().to_string()
                             ],
                         )?;
                         *open_row = Some((tx.last_insert_rowid(), now));
@@ -156,8 +160,8 @@ impl Db {
                 if piece.duration() > 0 {
                     tx.execute(
                         "INSERT INTO activity
-                         (application_class, display_name, category, started_at, ended_at, duration_seconds, date)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                         (application_class, display_name, category, started_at, ended_at, duration_seconds, date, segment_uuid)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                         params![
                             piece.class,
                             piece.display_name,
@@ -165,7 +169,8 @@ impl Db {
                             piece.started_at,
                             piece.ended_at,
                             piece.duration(),
-                            date_of(piece.started_at)
+                            date_of(piece.started_at),
+                            uuid::Uuid::now_v7().to_string()
                         ],
                     )?;
                 }
@@ -213,13 +218,108 @@ impl Db {
         Ok(out)
     }
 
+    /// Per-day history since `since_date` (inclusive), newest day first,
+    /// for the panel's optional history view. `top` caps the per-day app list.
+    pub fn history(&self, since_date: &str, top: usize) -> Result<Vec<DayHistory>> {
+        let mut totals = std::collections::BTreeMap::<String, u64>::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT date, SUM(duration_seconds)
+                 FROM activity WHERE date >= ?1 GROUP BY date",
+            )?;
+            let rows = stmt.query_map(params![since_date], |row| {
+                let seconds: i64 = row.get(1)?;
+                Ok((row.get::<_, String>(0)?, seconds.max(0) as u64))
+            })?;
+            for row in rows {
+                let (d, s) = row?;
+                totals.insert(d, s);
+            }
+        }
+        // Per-day per-app seconds, already sorted by date then usage.
+        let mut per_day: std::collections::BTreeMap<String, Vec<(String, u64)>> =
+            std::collections::BTreeMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT date, display_name, SUM(duration_seconds)
+                 FROM activity WHERE date >= ?1
+                 GROUP BY date, display_name ORDER BY date DESC, 3 DESC",
+            )?;
+            let rows = stmt.query_map(params![since_date], |row| {
+                let seconds: i64 = row.get(2)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    seconds.max(0) as u64,
+                ))
+            })?;
+            for row in rows {
+                let (d, name, s) = row?;
+                let list = per_day.entry(d).or_default();
+                if list.len() < top {
+                    list.push((name, s));
+                }
+            }
+        }
+        let mut out: Vec<DayHistory> = totals
+            .into_iter()
+            .map(|(date, total_seconds)| DayHistory {
+                apps: per_day.remove(&date).unwrap_or_default(),
+                date,
+                total_seconds,
+            })
+            .collect();
+        out.sort_by(|a, b| b.date.cmp(&a.date));
+        Ok(out)
+    }
+
     /// Delete everything strictly older than `cutoff_date` ("YYYY-MM-DD").
-    /// Returns the number of deleted rows.
-    pub fn retain(&self, cutoff_date: &str) -> Result<usize> {
-        let deleted = self
-            .conn
-            .execute("DELETE FROM activity WHERE date < ?1", params![cutoff_date])?;
+    /// When `only_synced` is true (cloud sync configured), rows that were
+    /// never acknowledged by the cloud are kept — pending data is never
+    /// deleted before its upload is confirmed.
+    pub fn retain(&self, cutoff_date: &str, only_synced: bool) -> Result<usize> {
+        let deleted = if only_synced {
+            self.conn.execute(
+                "DELETE FROM activity WHERE date < ?1 AND synced_at IS NOT NULL",
+                params![cutoff_date],
+            )?
+        } else {
+            self.conn
+                .execute("DELETE FROM activity WHERE date < ?1", params![cutoff_date])?
+        };
         Ok(deleted)
+    }
+
+    /// Rows waiting to be uploaded, excluding the open segment row.
+    pub fn pending_count(&self, exclude_row_id: i64) -> Result<usize> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM activity WHERE synced_at IS NULL AND id != ?1",
+            params![exclude_row_id],
+            |r| r.get(0),
+        )?;
+        Ok(n.max(0) as usize)
+    }
+
+    /// Flag rows as uploaded after the cloud acknowledged their batch.
+    pub fn mark_synced(&self, ids: &[i64], batch_id: &str, synced_at: i64) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "UPDATE activity SET synced_at = ?1, sync_batch_id = ?2
+             WHERE synced_at IS NULL AND id IN ({placeholders})"
+        );
+        let mut values = vec![
+            rusqlite::types::Value::Integer(synced_at),
+            rusqlite::types::Value::Text(batch_id.to_string()),
+        ];
+        for id in ids {
+            values.push(rusqlite::types::Value::Integer(*id));
+        }
+        let mut stmt = self.conn.prepare(&sql)?;
+        let n = stmt.execute(rusqlite::params_from_iter(values))?;
+        Ok(n)
     }
 
     /// Fold the WAL back into the main file (used on graceful shutdown).
@@ -227,6 +327,63 @@ impl Db {
         self.conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
+    }
+}
+
+/// One day of history for the panel's history view.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DayHistory {
+    pub date: String,
+    pub total_seconds: u64,
+    /// Top apps for that day, sorted by usage (capped by the caller).
+    pub apps: Vec<(String, u64)>,
+}
+
+/// One closed activity row, ready for cloud upload.
+#[derive(Debug, Clone)]
+pub struct SyncRow {
+    pub id: i64,
+    pub segment_uuid: String,
+    pub application_class: String,
+    pub display_name: String,
+    pub category: String,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub duration_seconds: i64,
+    pub date: String,
+}
+
+impl Db {
+    /// Closed, never-synced rows, oldest first, capped per batch.
+    /// `exclude_row_id` is the open segment's row id (it is still growing —
+    /// it syncs only after it closes); pass a negative id when there is none.
+    pub fn unsynced_rows(&self, exclude_row_id: i64, limit: usize) -> Result<Vec<SyncRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, segment_uuid, application_class, display_name, category,
+                    started_at, ended_at, duration_seconds, date
+             FROM activity
+             WHERE synced_at IS NULL AND id != ?1
+             ORDER BY started_at
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![exclude_row_id, limit as i64], |row| {
+            Ok(SyncRow {
+                id: row.get(0)?,
+                segment_uuid: row.get(1)?,
+                application_class: row.get(2)?,
+                display_name: row.get(3)?,
+                category: row.get(4)?,
+                started_at: row.get(5)?,
+                ended_at: row.get(6)?,
+                duration_seconds: row.get(7)?,
+                date: row.get(8)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 }
 
@@ -247,6 +404,40 @@ fn migrate(conn: &Connection, from: i32) -> Result<()> {
              CREATE INDEX IF NOT EXISTS idx_activity_date ON activity(date);
              CREATE INDEX IF NOT EXISTS idx_activity_class_date ON activity(application_class, date);
              PRAGMA user_version = 1;
+             COMMIT;",
+        )?;
+    }
+    if from < 2 {
+        // v2 — cloud sync: every segment row gets a globally unique id so the
+        // cloud can deduplicate across devices, plus per-row sync state.
+        // The local autoincrement `id` is not unique across devices.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE activity ADD COLUMN segment_uuid TEXT;
+             ALTER TABLE activity ADD COLUMN synced_at INTEGER;
+             ALTER TABLE activity ADD COLUMN sync_batch_id TEXT;
+             COMMIT;",
+        )?;
+        // Backfill UUIDs for rows created before this migration. SQLite has
+        // no UUID function, so this happens here in Rust, row by row.
+        let ids: Vec<i64> = {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM activity WHERE segment_uuid IS NULL",
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for id in ids {
+            conn.execute(
+                "UPDATE activity SET segment_uuid = ?1 WHERE id = ?2",
+                params![uuid::Uuid::now_v7().to_string(), id],
+            )?;
+        }
+        conn.execute_batch(
+            "BEGIN;
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_segment_uuid
+                 ON activity(segment_uuid);
+             PRAGMA user_version = 2;
              COMMIT;",
         )?;
     }
@@ -419,11 +610,127 @@ mod tests {
         let mut open_row = None;
         db.flush(None, &mut open_row, &[], &pending, 0, &utc_date).unwrap();
 
-        let deleted = db.retain("1970-01-04").unwrap();
+        let deleted = db.retain("1970-01-04", false).unwrap();
         assert_eq!(deleted, 2);
         assert!(db.today_totals("1970-01-02").unwrap().is_empty());
         assert!(db.today_totals("1970-01-03").unwrap().is_empty());
         assert_eq!(db.today_totals("1970-01-06").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migration_v2_backfills_segment_uuids() {
+        let dir = TempDir::new("v2");
+        let path = dir.0.join("activity.db");
+        // Create a v1 database by hand.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE activity (
+                     id INTEGER PRIMARY KEY,
+                     application_class TEXT NOT NULL,
+                     display_name TEXT NOT NULL,
+                     category TEXT NOT NULL DEFAULT 'other',
+                     started_at INTEGER NOT NULL,
+                     ended_at INTEGER NOT NULL,
+                     duration_seconds INTEGER NOT NULL,
+                     date TEXT NOT NULL
+                 );
+                 INSERT INTO activity (application_class, display_name, category, started_at, ended_at, duration_seconds, date)
+                 VALUES ('code', 'VS Code', 'editor', 100, 200, 100, '1970-01-01');
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        drop(Db::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 2);
+        let (uuid, is_null): (String, i64) = conn
+            .query_row(
+                "SELECT segment_uuid, synced_at IS NULL FROM activity WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(!uuid.is_empty());
+        assert_eq!(is_null, 1, "backfilled rows are not marked synced");
+    }
+
+    #[test]
+    fn sync_roundtrip_marks_and_excludes() {
+        let dir = TempDir::new("syncq");
+        let mut db = Db::open(&dir.0.join("activity.db")).unwrap();
+        let pending = vec![
+            seg("code", "VS Code", day5(9, 0, 0), day5(9, 30, 0)),
+            seg("foot", "Foot", day5(10, 0, 0), day5(10, 15, 0)),
+        ];
+        let mut open_row = None;
+        db.flush(Some(&pending[0].clone()), &mut open_row, &[], &pending[1..], day5(10, 20, 0), &utc_date)
+            .unwrap();
+        let open_id = open_row.unwrap().0;
+
+        // The open row is excluded from sync candidates.
+        let rows = db.unsynced_rows(open_id, 500).unwrap();
+        assert_eq!(rows.len(), 1, "only the closed Foot row is a candidate");
+        assert_eq!(rows[0].display_name, "Foot");
+        assert!(!rows[0].segment_uuid.is_empty());
+
+        // With no open row, both rows are candidates, oldest first.
+        db.flush(None, &mut open_row, &[], &[], 0, &utc_date).unwrap();
+        let rows = db.unsynced_rows(-1, 500).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].started_at <= rows[1].started_at);
+
+        // Ack marks exactly the requested rows.
+        let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let n = db.mark_synced(&ids, "batch-1", 12345).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(db.pending_count(-1).unwrap(), 0);
+        let rows = db.unsynced_rows(-1, 500).unwrap();
+        assert!(rows.is_empty());
+
+        // A second mark of the same batch is a no-op (idempotent ack).
+        let n = db.mark_synced(&ids, "batch-1", 12345).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn unsynced_rows_respects_limit() {
+        let dir = TempDir::new("limit");
+        let mut db = Db::open(&dir.0.join("activity.db")).unwrap();
+        let pending: Vec<Segment> = (0..5)
+            .map(|i| seg("code", "VS Code", day5(9 + i, 0, 0), day5(9 + i, 0, 30)))
+            .collect();
+        let mut open_row = None;
+        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date).unwrap();
+        let rows = db.unsynced_rows(-1, 3).unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn retention_keeps_unsynced_rows_when_syncing() {
+        let dir = TempDir::new("retsync");
+        let mut db = Db::open(&dir.0.join("activity.db")).unwrap();
+        let pending = vec![
+            seg("old1", "Old1", 1 * DAY, 1 * DAY + 100), // 1970-01-02
+            seg("old2", "Old2", 2 * DAY, 2 * DAY + 100), // 1970-01-03
+            seg("new", "New", day5(9, 0, 0), day5(9, 30, 0)),
+        ];
+        let mut open_row = None;
+        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date).unwrap();
+        // Ack only the first old row so it becomes deletable.
+        let ids: Vec<i64> = db.unsynced_rows(-1, 500).unwrap().iter().map(|r| r.id).collect();
+        db.mark_synced(&ids[..1], "b", 5).unwrap();
+
+        // With sync: the acked old row goes; the un-acked old row survives.
+        let deleted = db.retain("1970-01-04", true).unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(db.pending_count(-1).unwrap(), 2); // old2 unsynced + today's
+
+        // Without sync: everything old goes regardless of sync state.
+        let deleted = db.retain("1970-01-04", false).unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(db.pending_count(-1).unwrap(), 1); // today's row only
     }
 
     #[test]

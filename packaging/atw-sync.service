@@ -1,0 +1,9 @@
+[Unit]
+Description=Dev Activity Watcher — sync pending activity now
+Documentation=file://%h/Work/atw/README.md
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/atw sync
+# Manual one-shot: the daemon normally syncs on its own every 10 minutes.

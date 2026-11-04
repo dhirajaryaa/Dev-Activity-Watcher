@@ -19,6 +19,7 @@ pub const DEFAULT_RETENTION_DAYS: u32 = 7;
 pub struct Config {
     pub tracking: Tracking,
     pub storage: Storage,
+    pub sync: Sync,
 }
 
 impl Default for Config {
@@ -26,6 +27,7 @@ impl Default for Config {
         Config {
             tracking: Tracking::default(),
             storage: Storage::default(),
+            sync: Sync::default(),
         }
     }
 }
@@ -86,6 +88,64 @@ pub struct Storage {
     pub data_dir: Option<PathBuf>,
     /// Defaults to $XDG_STATE_HOME/atw (~/.local/state/atw).
     pub state_dir: Option<PathBuf>,
+}
+
+/// Allowed sync intervals (minutes -> seconds).
+pub const SYNC_INTERVAL_CHOICES: &[u32] = &[300, 600, 900, 1800];
+pub const DEFAULT_SYNC_INTERVAL_SECONDS: u32 = 600;
+/// Cloud-side retention of raw segments; aggregates are kept forever.
+pub const DEFAULT_CLOUD_RETENTION_DAYS: u32 = 90;
+
+/// Cloud sync to a user-owned Turso database (BYOD). Sync is optional and
+/// local tracking never depends on it; `enabled` defaults to true so the
+/// toggle in the panel starts ON, but without `url` + a token the daemon
+/// simply skips syncing and logs one hint.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Sync {
+    /// Master switch (panel toggle writes this back to the config file).
+    pub enabled: bool,
+    /// Database base URL, e.g. https://mydb-myorg.turso.io
+    pub url: String,
+    /// Command that prints the database token on stdout, e.g.
+    /// `secret-tool lookup service atw` (OS keyring — preferred).
+    pub token_cmd: String,
+    /// Literal token fallback (stored in the config file — discouraged,
+    /// the daemon logs a warning when this is used).
+    pub token: String,
+    /// Auto-sync interval in seconds (300/600/900/1800).
+    pub interval_seconds: u32,
+    /// Days of raw segments kept in the cloud (aggregates are never deleted).
+    pub cloud_retention_days: u32,
+}
+
+impl Default for Sync {
+    fn default() -> Self {
+        Sync {
+            enabled: true,
+            url: String::new(),
+            token_cmd: String::new(),
+            token: String::new(),
+            interval_seconds: DEFAULT_SYNC_INTERVAL_SECONDS,
+            cloud_retention_days: DEFAULT_CLOUD_RETENTION_DAYS,
+        }
+    }
+}
+
+impl Sync {
+    /// True when the config has everything a sync attempt needs.
+    pub fn is_configured(&self) -> bool {
+        !self.url.is_empty()
+    }
+
+    /// Snap the interval to one of the allowed choices.
+    pub fn effective_interval(&self) -> u32 {
+        if SYNC_INTERVAL_CHOICES.contains(&self.interval_seconds) {
+            self.interval_seconds
+        } else {
+            DEFAULT_SYNC_INTERVAL_SECONDS
+        }
+    }
 }
 
 pub struct ResolvedDirs {
@@ -155,6 +215,34 @@ excluded_apps = []
 # Friendly names for window classes, e.g. { "foot" = "Terminal" }
 # Built-in names exist for common apps; entries here win.
 [tracking.display_names]
+
+[sync]
+# Cloud sync to YOUR OWN Turso database (bring-your-own-database).
+# On by default; without a url + token the daemon just skips syncing.
+# The panel toggle writes this value back to the file.
+#
+# First-time setup: create a database at app.turso.tech, then paste here:
+#   url   = the database URL (https://<name>-<org>.turso.io)
+#   token = the database token (paste it on the line below)
+# That's it — restart atwd and it syncs every 10 minutes.
+enabled = true
+
+# Paste your database URL here, e.g. "https://mydb-myorg.turso.io"
+url = ""
+
+# Paste your database token here (from app.turso.tech → database → Tokens).
+token = ""
+
+# Advanced: fetch the token by running a command instead of storing it
+# here, e.g. "secret-tool lookup service atw" (OS keyring). When set,
+# this wins over the token above.
+token_cmd = ""
+
+# How often to sync (seconds): 300, 600, 900 or 1800.
+interval_seconds = 600
+
+# Days of raw activity kept in the cloud (aggregates are kept forever).
+cloud_retention_days = 90
 "#;
 
 /// Load the config, creating the default file if it does not exist yet.
@@ -171,6 +259,76 @@ pub fn load_or_init(path: Option<&Path>) -> Result<Config> {
     }
     let text = std::fs::read_to_string(&path)?;
     toml::from_str(&text).map_err(|e| AtwError::Toml(e, path))
+}
+
+/// Set one `section.key` value in the config file while preserving comments
+/// and every unrelated line. The result is re-parsed before writing, so a bad
+/// value can never corrupt the file. Used by the panel (Cloud section) so the
+/// user never has to edit TOML by hand.
+pub fn set_value(path: &Path, dotted_key: &str, raw_value: &str) -> Result<()> {
+    let (section, key) = dotted_key.split_once('.').ok_or_else(|| {
+        AtwError::Config(format!(
+            "key must look like section.name (e.g. sync.url), got {dotted_key}"
+        ))
+    })?;
+    let original = std::fs::read_to_string(path)?;
+    let formatted = format_toml_value(key, raw_value);
+    let mut lines: Vec<String> = original.lines().map(|l| l.to_string()).collect();
+    let header = format!("[{section}]");
+    let header_idx = lines.iter().position(|l| l.trim() == header);
+    match header_idx {
+        None => {
+            if !lines.last().map(|l| l.trim().is_empty()).unwrap_or(true) {
+                lines.push(String::new());
+            }
+            lines.push(header);
+            lines.push(format!("{key} = {formatted}"));
+        }
+        Some(start) => {
+            // Section ends at the next [header] (if any).
+            let mut end = lines.len();
+            for (i, line) in lines.iter().enumerate().skip(start + 1) {
+                let t = line.trim();
+                if t.starts_with('[') && t.ends_with(']') {
+                    end = i;
+                    break;
+                }
+            }
+            let mut found = None;
+            for i in start + 1..end {
+                let t = lines[i].trim_start();
+                if let Some(rest) = t.strip_prefix(key) {
+                    if rest.trim_start().starts_with('=') {
+                        found = Some(i);
+                        break;
+                    }
+                }
+            }
+            match found {
+                Some(i) => lines[i] = format!("{key} = {formatted}"),
+                None => lines.insert(end, format!("{key} = {formatted}")),
+            }
+        }
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    // Refuse to write something that no longer parses.
+    let _check: Config =
+        toml::from_str(&text).map_err(|e| AtwError::Toml(e, path.to_path_buf()))?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn format_toml_value(key: &str, raw: &str) -> String {
+    if raw == "true" || raw == "false" {
+        return raw.to_string();
+    }
+    if (key.ends_with("_seconds") || key.ends_with("_days")) && raw.parse::<i64>().is_ok() {
+        return raw.to_string();
+    }
+    toml::Value::String(raw.to_string()).to_string()
 }
 
 /// Local date strictly before which records are deleted.
@@ -230,6 +388,88 @@ mod tests {
             vec!["editor", "browser", "terminal", "agent"]
         );
         assert!(cfg.tracking.tracked_apps.is_empty());
+        // Cloud sync defaults ON (panel toggle), but is inert until a url exists.
+        assert!(cfg.sync.enabled);
+        assert!(cfg.sync.url.is_empty());
+        assert!(!cfg.sync.is_configured());
+        assert_eq!(cfg.sync.effective_interval(), 600);
+        assert_eq!(cfg.sync.cloud_retention_days, 90);
+    }
+
+    #[test]
+    fn sync_interval_snaps_to_choices() {
+        let mut s = Sync::default();
+        s.interval_seconds = 777;
+        assert_eq!(s.effective_interval(), 600);
+        s.interval_seconds = 900;
+        assert_eq!(s.effective_interval(), 900);
+    }
+
+    #[test]
+    fn sync_off_when_disabled() {
+        let cfg: Config =
+            toml::from_str("[sync]\nenabled = false\nurl = \"https://x.turso.io\"").unwrap();
+        assert!(!cfg.sync.enabled);
+        assert!(cfg.sync.is_configured());
+    }
+
+    #[test]
+    fn set_value_preserves_comments_and_other_keys() {
+        let dir = std::env::temp_dir().join(format!("atw-cfg-set-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, CONFIG_TEMPLATE).unwrap();
+
+        set_value(&path, "sync.url", "https://mydb-myorg.turso.io").unwrap();
+        set_value(&path, "sync.token", "tok.en-with_dots").unwrap();
+        set_value(&path, "sync.enabled", "false").unwrap();
+        set_value(&path, "sync.interval_seconds", "900").unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        // Comments survived.
+        assert!(text.contains("# Cloud sync to YOUR OWN Turso database"));
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.sync.url, "https://mydb-myorg.turso.io");
+        assert_eq!(cfg.sync.token, "tok.en-with_dots");
+        assert!(!cfg.sync.enabled);
+        assert_eq!(cfg.sync.interval_seconds, 900);
+        // Tracking section untouched.
+        assert!(cfg.tracking.enabled);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn set_value_adds_missing_section_and_key() {
+        let dir = std::env::temp_dir().join(format!("atw-cfg-add-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        // An old v1 config: no [sync] at all.
+        std::fs::write(&path, "[tracking]\nenabled = true\n").unwrap();
+        set_value(&path, "sync.url", "https://x.turso.io").unwrap();
+        set_value(&path, "tracking.idle_timeout_seconds", "120").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.sync.url, "https://x.turso.io");
+        assert_eq!(cfg.tracking.idle_timeout_seconds, 120);
+        assert!(text.contains("[sync]"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn set_value_rejects_bad_keys_and_values() {
+        let dir = std::env::temp_dir().join(format!("atw-cfg-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[tracking]\nenabled = true\n").unwrap();
+        assert!(set_value(&path, "nodot", "x").is_err());
+        // Wrong type for a numeric field: file must be left intact.
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(set_value(&path, "tracking.idle_timeout_seconds", "not-a-number").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -1,20 +1,23 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Dev Activity Watcher — expanded view: today's per-app breakdown, the
-// weekly top apps, and the privacy facts (local-only storage, 7-day
-// retention, where to configure).
+// Dev Activity Watcher — expanded view.
+//
+// Default view is TODAY only. The small "History" button swaps the section
+// to the last 7 days (on demand — no history clutter by default).
+//
+// Cloud sync is optional and off the main path: a toggle (default ON), and
+// a first-time setup where the user pastes the database URL + token right
+// here (no config file editing). "Sync now" asks the daemon to sync
+// immediately; otherwise it runs every 10 minutes on its own.
 //
 // Alignment conventions (matching the clock panel): the header and the hero
 // total are centered within their own full-width rows; section labels head
 // their lists from the left; list rows keep the activity-monitor shape —
 // name left, time right. Nothing is centered by centering the window.
-//
-// BarWidget.qml owns the bar item and hands this panel the button to anchor
-// against; the status data lives on the host widget so bar and panel share
-// one FileView.
 Panel {
   id: root
   moduleName: "dhirajarya.atw"
@@ -33,6 +36,27 @@ Panel {
   readonly property var weekList: sortedEntries(status ? status.week : null)
   readonly property real todayMax: todayList.length > 0 ? todayList[0].seconds : 1
 
+  // ---- History (shown only when the user clicks History) ----
+  property bool historyMode: false
+  readonly property var historyList: status && status.history ? status.history : []
+
+  // ---- Cloud sync ----
+  readonly property var syncInfo: status && status.sync ? status.sync : null
+  readonly property bool syncConfigured: syncInfo ? syncInfo.configured === true : false
+  // Optimistic local value so the switch throws immediately; the daemon's
+  // refreshed status takes over when the panel is reopened.
+  property var syncOnOverride: null
+  readonly property bool syncOn: syncOnOverride !== null
+    ? syncOnOverride
+    : (syncInfo ? syncInfo.enabled === true : true)
+  property string urlInput: ""
+  property string tokenInput: ""
+  property string connectError: ""
+  property bool connecting: false
+  property bool syncingNow: false
+
+  readonly property string atwBin: Quickshell.env("HOME") + "/.local/bin/atw"
+
   function sortedEntries(map) {
     var entries = []
     if (map) {
@@ -47,6 +71,127 @@ Panel {
 
   function formatDuration(seconds) {
     return hostWidget ? hostWidget.formatDuration(seconds) : Math.floor(Number(seconds) || 0) + "s"
+  }
+
+  function dayLabel(dateStr) {
+    var parts = String(dateStr || "").split("-")
+    if (parts.length !== 3) return String(dateStr || "")
+    var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+    var now = new Date()
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    var diff = Math.round((today.getTime() - d.getTime()) / 86400000)
+    if (diff === 0) return "Today"
+    if (diff === 1) return "Yesterday"
+    var names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    return names[d.getDay()] + " " + (d.getDate() < 10 ? "0" : "") + d.getDate()
+  }
+
+  // Top two apps of a day, e.g. "VS Code 3h · Foot 40m".
+  function topApps(map) {
+    var list = sortedEntries(map)
+    var parts = []
+    for (var i = 0; i < Math.min(2, list.length); i++)
+      parts.push(list[i].name + " " + formatDuration(list[i].seconds))
+    return parts.join(" · ")
+  }
+
+  function shortTime(rfc) {
+    var d = new Date(String(rfc || ""))
+    if (isNaN(d.getTime())) return ""
+    var h = d.getHours(), m = d.getMinutes()
+    return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m
+  }
+
+  function syncLine() {
+    if (!syncOn) return "Off — stays local"
+    if (!syncConfigured) return "Paste your database URL and token"
+    if (syncingNow) return "Syncing…"
+    var info = syncInfo || {}
+    var pending = Math.floor(Number(info.pending) || 0)
+    if (info.last_error) return "Sync failed — will retry"
+    if (info.last_sync && shortTime(info.last_sync) !== "") {
+      var line = "Synced " + shortTime(info.last_sync)
+      return pending > 0 ? line + " · " + pending + " pending" : line
+    }
+    return pending > 0 ? pending + " pending" : "Not synced yet"
+  }
+
+  function connect() {
+    if (urlInput.trim() === "" || tokenInput === "") {
+      connectError = "Paste both the URL and the token"
+      return
+    }
+    connectError = ""
+    connecting = true
+    saveUrl.running = true
+  }
+
+  // ---- Command plumbing (all through the installed `atw` CLI) ----
+  Process {
+    id: saveUrl
+    command: [root.atwBin, "config", "set", "sync.url", root.urlInput.trim()]
+    onExited: function(code) {
+      if (code !== 0) {
+        root.connecting = false
+        root.connectError = "Could not save the database URL"
+        return
+      }
+      saveToken.running = true
+    }
+  }
+
+  Process {
+    id: saveToken
+    stdinEnabled: true
+    command: [root.atwBin, "config", "set", "sync.token", "-"]
+    onStarted: {
+      write(root.tokenInput + "\n")
+      root.tokenInput = ""
+    }
+    onExited: function(code) {
+      if (code !== 0) {
+        root.connecting = false
+        root.connectError = "Could not save the token"
+        return
+      }
+      root.connecting = false
+      root.connectError = ""
+      // Connecting implies "on", then restart the daemon to apply.
+      root.syncOnOverride = true
+      setEnabled.running = true
+    }
+  }
+
+  Process {
+    id: setEnabled
+    command: [root.atwBin, "config", "set", "sync.enabled", root.syncOn ? "true" : "false"]
+    onExited: function(code) {
+      if (code !== 0) {
+        root.syncOnOverride = null
+        root.connectError = "Could not save the sync setting"
+        return
+      }
+      restartDaemon.running = true
+    }
+  }
+
+  Process {
+    id: restartDaemon
+    command: ["systemctl", "--user", "restart", "atwd"]
+    onExited: function(code) {
+      if (root.hostWidget) root.hostWidget.refresh()
+    }
+  }
+
+  Process {
+    id: syncNow
+    command: ["sh", "-c", "systemctl --user kill --signal=USR1 atwd 2>/dev/null || " + root.atwBin + " sync"]
+    onExited: function(code) {
+      // The daemon writes status.json when SyncDone arrives; the FileView
+      // watcher in BarWidget refreshes the panel automatically.
+      root.syncingNow = false
+      if (root.hostWidget) root.hostWidget.refresh()
+    }
   }
 
   // Guarded so the widget renders before the bar is injected (the bar-widget
@@ -141,14 +286,38 @@ Panel {
             font.bold: true
           }
 
-          // ---- Today, per app
-          PanelSectionHeader {
-            text: "Today"
-            fontSize: Style.font.body
-            foreground: root.muted
+          // ---- Today / History section header. History is opt-in: the
+          //      default view is today only.
+          Item {
+            width: parent.width
+            height: Math.max(sectionHeader.implicitHeight, viewToggle.implicitHeight)
+
+            PanelSectionHeader {
+              id: sectionHeader
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.historyMode ? "History" : "Today"
+              fontSize: Style.font.body
+              foreground: root.muted
+            }
+
+            Button {
+              id: viewToggle
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.historyMode ? "Today" : "History"
+              fontSize: Style.font.body
+              foreground: root.muted
+              accent: root.accent
+              bordered: false
+              verticalPadding: Style.space(2)
+              onClicked: root.historyMode = !root.historyMode
+            }
           }
 
+          // ---- Today, per app (default view)
           Column {
+            visible: !root.historyMode
             width: parent.width
             spacing: Style.space(10)
 
@@ -208,61 +377,70 @@ Panel {
             }
           }
 
-          // ---- Week, top apps
-          PanelSectionHeader {
-            text: "Last 7 days"
-            fontSize: Style.font.body
-            foreground: root.muted
-          }
-
+          // ---- History, day by day (only when the user asked for it)
           Column {
+            visible: root.historyMode
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(12)
 
             Repeater {
-              model: root.weekList
+              model: root.historyList
 
-              delegate: Item {
+              delegate: Column {
                 required property var modelData
                 width: parent.width
-                height: Math.max(weekName.implicitHeight, weekTime.implicitHeight)
+                spacing: Style.space(3)
 
-                Text {
-                  id: weekName
-                  anchors.left: parent.left
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - weekTime.implicitWidth - Style.space(10)
-                  text: modelData.name
-                  color: root.foreground
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.body
-                  elide: Text.ElideRight
+                Item {
+                  width: parent.width
+                  height: Math.max(dayName.implicitHeight, dayTime.implicitHeight)
+
+                  Text {
+                    id: dayName
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - dayTime.implicitWidth - Style.space(10)
+                    text: root.dayLabel(modelData.date)
+                    color: root.foreground
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  Text {
+                    id: dayTime
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.formatDuration(modelData.total_seconds)
+                    color: root.foreground
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+                  }
                 }
 
                 Text {
-                  id: weekTime
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: root.formatDuration(modelData.seconds)
+                  width: parent.width
+                  text: root.topApps(modelData.apps)
                   color: root.muted
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                  visible: text !== ""
                 }
               }
             }
 
             Text {
-              visible: root.weekList.length === 0
+              visible: root.historyList.length === 0
               width: parent.width
               horizontalAlignment: Text.AlignHCenter
-              text: "Nothing recorded in the last 7 days."
+              text: "No history yet."
               color: root.muted
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
             }
           }
 
-          // ---- Settings (widget display options)
+          // ---- Widget settings
           PanelSectionHeader {
             text: "Widget"
             fontSize: Style.font.body
@@ -303,9 +481,160 @@ Panel {
               }
             }
 
+            Item {
+              width: parent.width
+              height: Math.max(formatLabel.implicitHeight, formatValue.implicitHeight)
+
+              Text {
+                id: formatLabel
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Bar format"
+                color: root.foreground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              Text {
+                id: formatValue
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.hostWidget ? root.hostWidget.barFormat : "Icon + hours"
+                color: root.muted
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+            }
+
             Text {
               width: parent.width
-              text: "Config: ~/.config/atw/config.toml — restart atwd after editing"
+              text: "Right-click the bar icon to change the format."
+              color: root.muted
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          // ---- Cloud sync: toggle + first-time paste-in setup
+          Item {
+            width: parent.width
+            height: Math.max(cloudHeader.implicitHeight, cloudToggle.implicitHeight)
+
+            PanelSectionHeader {
+              id: cloudHeader
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Cloud sync"
+              fontSize: Style.font.body
+              foreground: root.muted
+            }
+
+            ToggleSwitch {
+              id: cloudToggle
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              checked: root.syncOn
+              foreground: root.foreground
+              accent: root.accent
+              onToggled: {
+                root.syncOnOverride = !root.syncOn
+                setEnabled.running = true
+              }
+            }
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+
+            // First time: paste the database URL + token here.
+            TextField {
+              visible: root.syncOn && !root.syncConfigured
+              width: parent.width
+              placeholderText: "Database URL (https://…turso.io)"
+              text: root.urlInput
+              onTextChanged: root.urlInput = text
+              foreground: root.foreground
+              accent: root.accent
+              font.pixelSize: Style.font.body
+            }
+
+            TextField {
+              visible: root.syncOn && !root.syncConfigured
+              width: parent.width
+              password: true
+              placeholderText: "Database token"
+              text: root.tokenInput
+              onTextChanged: root.tokenInput = text
+              foreground: root.foreground
+              accent: root.accent
+              font.pixelSize: Style.font.body
+            }
+
+            Button {
+              visible: root.syncOn && !root.syncConfigured
+              text: root.connecting ? "Connecting…" : "Connect"
+              enabled: !root.connecting
+              foreground: root.foreground
+              accent: root.accent
+              bordered: true
+              fontSize: Style.font.body
+              onClicked: root.connect()
+            }
+
+            // Configured: last-sync line + manual sync.
+            Item {
+              visible: root.syncConfigured && root.syncOn
+              width: parent.width
+              height: Math.max(syncLineText.implicitHeight, syncNowButton.implicitHeight)
+
+              Text {
+                id: syncLineText
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - syncNowButton.implicitWidth - Style.space(10)
+                text: root.syncLine()
+                color: root.muted
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+
+              Button {
+                id: syncNowButton
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.syncingNow ? "Syncing…" : "Sync now"
+                enabled: !root.syncingNow
+                foreground: root.foreground
+                accent: root.accent
+                bordered: true
+                fontSize: Style.font.body
+                onClicked: {
+                  root.syncingNow = true
+                  syncNow.running = true
+                }
+              }
+            }
+
+            Text {
+              visible: root.connectError !== ""
+              width: parent.width
+              text: root.connectError
+              color: root.urgent
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              text: root.syncOn
+                ? (root.syncConfigured
+                    ? "Your own database — only app names and durations are uploaded."
+                    : "Syncs every 10 minutes. Only app names and durations are uploaded.")
+                : "Off — everything stays on this machine."
               color: root.muted
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
@@ -322,7 +651,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "Local only — no network, no telemetry. Stored in ~/.local/share/atw, deleted after 7 days."
+            text: "App names and durations only — never window titles or paths. 7 days local, 90 days in the cloud."
             color: root.muted
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.body

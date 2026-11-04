@@ -26,7 +26,8 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "showIdleDot": true
+      "showIdleDot": true,
+      "barFormat": "Icon + hours"
     },
     "schema": [
       {
@@ -35,6 +36,14 @@
         "label": "Dim the widget while idle",
         "defaultValue": true,
         "description": "Dims the bar item and its tooltip mentions the idle state when you are AFK."
+      },
+      {
+        "key": "barFormat",
+        "type": "enum",
+        "label": "Bar display",
+        "options": ["Icon", "Icon + hours", "Icon + hours + minutes"],
+        "defaultValue": "Icon + hours",
+        "description": "What the bar shows. Right-clicking the widget cycles through the three formats."
       }
     ]
   }

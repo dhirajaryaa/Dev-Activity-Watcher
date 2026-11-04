@@ -52,6 +52,13 @@ BarWidget {
 
   // ---- Widget settings (shell.json entry, edited via the panel) ----
   readonly property bool showIdleDot: setting("showIdleDot", true)
+  // Bar display format, cycled by right-click:
+  //   0 = icon only, 1 = icon + hours, 2 = icon + hours + minutes.
+  readonly property string barFormat: {
+    var v = String(setting("barFormat", "Icon + hours"))
+    if (v === "Icon" || v === "Icon + hours + minutes") return v
+    return "Icon + hours"
+  }
 
   function setSetting(key, value) {
     var entry = { id: root.moduleName }
@@ -64,7 +71,25 @@ BarWidget {
       root.bar.shell.updateEntryInline(root.moduleName, entry)
   }
 
-  function formatDuration(seconds) {
+  function cycleBarFormat() {
+    var next = barFormat === "Icon"
+      ? "Icon + hours"
+      : barFormat === "Icon + hours" ? "Icon + hours + minutes" : "Icon"
+    setSetting("barFormat", next)
+  }
+
+  // Hours only above an hour ("1h"); minutes below it ("45m") so the bar
+  // still means something in the morning.
+  function formatHours(seconds) {
+    var s = Math.max(0, Math.floor(Number(seconds) || 0))
+    var h = Math.floor(s / 3600)
+    if (h > 0) return h + "h"
+    var m = Math.floor(s / 60)
+    if (m > 0) return m + "m"
+    return s + "s"
+  }
+
+  function formatHoursMinutes(seconds) {
     var s = Math.max(0, Math.floor(Number(seconds) || 0))
     var h = Math.floor(s / 3600)
     var m = Math.floor((s % 3600) / 60)
@@ -73,9 +98,13 @@ BarWidget {
     return s + "s"
   }
 
-  readonly property string barText: root.vertical
-    ? "\uf1da"
-    : "\uf1da " + formatDuration(displaySeconds)
+  readonly property string barText: {
+    var icon = "\uf1da"
+    if (root.vertical || root.barFormat === "Icon") return icon
+    if (root.barFormat === "Icon + hours + minutes")
+      return icon + " " + formatHoursMinutes(displaySeconds)
+    return icon + " " + formatHours(displaySeconds)
+  }
   readonly property string barTooltip: displayApp !== ""
     ? displayApp + " — " + displayState
     : "Dev Activity Watcher"
@@ -147,7 +176,8 @@ BarWidget {
     hasVisualContent: text !== ""
 
     onPressed: function(buttonCode) {
-      root.togglePanel()
+      if (buttonCode === Qt.RightButton) root.cycleBarFormat()
+      else root.togglePanel()
     }
   }
 }
