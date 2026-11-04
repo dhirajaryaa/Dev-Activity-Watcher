@@ -14,22 +14,12 @@ pub const DEFAULT_IDLE_TIMEOUT_SECONDS: u32 = 300;
 pub const DEFAULT_FLUSH_INTERVAL_SECONDS: u32 = 420; // 7 minutes, inside the 5–10 window
 pub const DEFAULT_RETENTION_DAYS: u32 = 7;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub tracking: Tracking,
     pub storage: Storage,
     pub sync: Sync,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            tracking: Tracking::default(),
-            storage: Storage::default(),
-            sync: Sync::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -173,7 +163,9 @@ impl Config {
 }
 
 pub fn default_config_path() -> PathBuf {
-    xdg_dir("XDG_CONFIG_HOME", ".config").join("atw").join("config.toml")
+    xdg_dir("XDG_CONFIG_HOME", ".config")
+        .join("atw")
+        .join("config.toml")
 }
 
 pub const CONFIG_TEMPLATE: &str = r#"# atw — Activity Time Watch configuration
@@ -248,12 +240,15 @@ cloud_retention_days = 90
 /// Load the config, creating the default file if it does not exist yet.
 /// An existing file is never modified.
 pub fn load_or_init(path: Option<&Path>) -> Result<Config> {
-    let path = path.map(|p| p.to_path_buf()).unwrap_or_else(default_config_path);
+    let path = path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(default_config_path);
     if !path.exists() {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&path, CONFIG_TEMPLATE)?;
+        restrict_permissions(&path);
         tracing::info!(target: "atw", path = %path.display(), "wrote default config");
         return Ok(Config::default());
     }
@@ -295,8 +290,13 @@ pub fn set_value(path: &Path, dotted_key: &str, raw_value: &str) -> Result<()> {
                 }
             }
             let mut found = None;
-            for i in start + 1..end {
-                let t = lines[i].trim_start();
+            for (i, line) in lines
+                .iter()
+                .enumerate()
+                .skip(start + 1)
+                .take(end - start - 1)
+            {
+                let t = line.trim_start();
                 if let Some(rest) = t.strip_prefix(key) {
                     if rest.trim_start().starts_with('=') {
                         found = Some(i);
@@ -318,7 +318,18 @@ pub fn set_value(path: &Path, dotted_key: &str, raw_value: &str) -> Result<()> {
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)?;
+    // The file may contain the cloud token in plain text.
+    restrict_permissions(path);
     Ok(())
+}
+
+/// Config can contain a database token: keep it owner-only.
+fn restrict_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
 }
 
 fn format_toml_value(key: &str, raw: &str) -> String {
@@ -374,7 +385,10 @@ mod tests {
         let cfg: Config = toml::from_str("[tracking]\nidle_timeout_seconds = 60").unwrap();
         assert_eq!(cfg.tracking.idle_timeout_seconds, 60);
         assert!(cfg.tracking.enabled);
-        assert_eq!(cfg.tracking.flush_interval_seconds, DEFAULT_FLUSH_INTERVAL_SECONDS);
+        assert_eq!(
+            cfg.tracking.flush_interval_seconds,
+            DEFAULT_FLUSH_INTERVAL_SECONDS
+        );
     }
 
     #[test]
@@ -398,8 +412,10 @@ mod tests {
 
     #[test]
     fn sync_interval_snaps_to_choices() {
-        let mut s = Sync::default();
-        s.interval_seconds = 777;
+        let mut s = Sync {
+            interval_seconds: 777,
+            ..Default::default()
+        };
         assert_eq!(s.effective_interval(), 600);
         s.interval_seconds = 900;
         assert_eq!(s.effective_interval(), 900);
@@ -478,6 +494,21 @@ mod tests {
         assert!(t.tracked_categories.contains(&"editor".to_string()));
         assert!(t.tracked_categories.contains(&"agent".to_string()));
         assert!(!t.tracked_categories.contains(&"media".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("atw-cfg-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        load_or_init(Some(&path)).unwrap();
+        set_value(&path, "sync.token", "secret").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
