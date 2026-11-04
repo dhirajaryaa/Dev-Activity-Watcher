@@ -163,7 +163,7 @@ Panel {
     }
     // The token is only required the first time; when changing an existing
     // setup an empty field means "keep the saved token".
-    if (!syncConfigured && tokenInput === "") {
+    if (!syncConfigured && tokenInput.trim() === "") {
       connectError = "Paste the database token"
       return
     }
@@ -186,7 +186,7 @@ Panel {
         return
       }
       // A blank token means "keep the existing one" when editing.
-      if (root.tokenInput !== "") saveToken.running = true
+      if (root.tokenInput.trim() !== "") saveToken.running = true
       else checkConnection.running = true
     }
   }
@@ -198,7 +198,7 @@ Panel {
     onStarted: {
       // Piped on stdin so the token never appears in the process list.
       // Kept in the field until the connection check succeeds.
-      write(root.tokenInput + "\n")
+      write(root.tokenInput.trim() + "\n")
     }
     onExited: function(code) {
       if (code !== 0) {
@@ -220,8 +220,8 @@ Panel {
         root.tokenInput = ""
         root.editingCloud = false
       } else {
-        // The config is saved either way; only the values failed.
-        root.noteText = "Saved"
+        // The config is saved either way; only the connection failed.
+        root.noteText = ""
         root.connectError = "Saved, but the connection failed — check the URL and token"
       }
       root.syncOnOverride = true

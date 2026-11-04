@@ -11,7 +11,6 @@
 //! without applying anything twice. Two concurrent syncs (daemon + `atw sync`)
 //! also converge: one applies, the other is acked as duplicate.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::cloud::{self, CloudBackend, SegmentInput, UploadOutcome};
@@ -398,10 +397,12 @@ pub fn check_connection(config: &Config) -> Result<String> {
     Ok(format!("connected — cloud has {count} stored segment(s)"))
 }
 
-/// Read stdin fully (used for the token-safe `atw config set sync.token -`).
+/// Read one stdin line (used for the token-safe `atw config set sync.token -`).
+/// A newline is enough; the panel keeps its end of the pipe open, so waiting
+/// for EOF would hang the Save flow.
 pub fn read_stdin_trimmed() -> Result<String> {
     let mut buf = String::new();
-    std::io::stdin().read_to_string(&mut buf)?;
+    std::io::stdin().read_line(&mut buf)?;
     Ok(buf.trim_end_matches(['\n', '\r']).to_string())
 }
 
