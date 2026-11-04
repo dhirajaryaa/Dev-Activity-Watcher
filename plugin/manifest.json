@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "dhirajarya",
   "license": "MIT",
-  "description": "Local-only developer activity tracker: today's per-app time and weekly top apps for editors, AI agents, browsers, and terminals. No network, no telemetry, 7-day retention.",
+  "description": "Privacy-first developer activity tracker: today's per-app time and 7-day history for editors, AI agents, browsers, and terminals. Local by default; optional sync to your own database.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Dev Activity Watcher",
-    "description": "Today's developer app usage at a glance with an expandable breakdown. Tracks editors, AI agents, browsers, and terminals only; reads a local status file written by the atwd daemon — nothing leaves this machine.",
+    "description": "Today's developer app usage at a glance with an expandable breakdown. Tracks editors, AI agents, browsers, and terminals only; data stays local unless you configure optional cloud sync.",
     "category": "System",
     "aliases": [
       "activity",
@@ -41,7 +41,11 @@
         "key": "barFormat",
         "type": "enum",
         "label": "Bar display",
-        "options": ["Icon", "Icon + hours", "Icon + hours + minutes"],
+        "options": [
+          "Icon",
+          "Icon + hours",
+          "Icon + hours + minutes"
+        ],
         "defaultValue": "Icon + hours",
         "description": "What the bar shows. Right-clicking the widget cycles through the three formats."
       }

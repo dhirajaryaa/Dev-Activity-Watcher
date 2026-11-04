@@ -48,7 +48,9 @@ No accounts, no Turso CLI, no OAuth — paste two values in the panel:
 1. Open the panel, find **Cloud sync** (on by default).
 2. Paste the database URL (`libsql://…` or `https://…turso.io`) and a
    database-scoped token.
-3. Click **Connect**. Takes effect immediately.
+3. Click **Save**. The panel verifies the connection and the URL stays
+   visible; **Change** reopens the form later (a blank token keeps the
+   saved one).
 
 Sync then runs every 10 minutes (5/10/15/30 configurable) and retries with
 exponential backoff after failures; **Sync now** forces an attempt. The panel
@@ -97,7 +99,7 @@ Cloud (`[sync]`):
 |---|---|---|
 | `enabled` | `true` | Sync switch (panel toggle). Off = fully local. |
 | `url` | `""` | Your Turso/libSQL database URL. |
-| `token` | `""` | Database token (pasted in the panel; stored plain-text in this file). |
+| `token` | `""` | Database token (pasted in the panel; stored in this owner-only file, mode 0600). |
 | `token_cmd` | `""` | Advanced: shell command printing the token (wins over `token`). |
 | `interval_seconds` | `600` | 300 / 600 / 900 / 1800. |
 | `cloud_retention_days` | `90` | Raw cloud segments older than this are pruned; daily aggregates stay. |
@@ -121,9 +123,21 @@ only app names, categories, and time intervals go to the database you
 configured — never window titles, paths, or keystrokes. The daemon has no
 listening sockets and no telemetry.
 
-## Development
+## Build from source
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for the full build log, design
-decisions (in plain language), and the test history; [TODO.md](TODO.md)
-tracks the phase plan. [`docs/PORTFOLIO.md`](docs/PORTFOLIO.md) documents the
-cloud schema and read-only queries.
+```bash
+cargo build --release
+cargo test          # 105 unit/integration tests
+packaging/install.sh
+```
+
+Requirements: Rust (stable), Hyprland, and the Omarchy shell. The release
+binaries are small (≈2.5 MB); there are no Python/Node runtimes, no daemon
+framework, and no polling loop.
+
+[`docs/PORTFOLIO.md`](docs/PORTFOLIO.md) documents the cloud schema and
+read-only queries for dashboards.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
