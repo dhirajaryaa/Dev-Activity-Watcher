@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "dhirajarya.atw",
+  "name": "Dev Activity Watcher",
+  "version": "0.1.0",
+  "author": "dhirajarya",
+  "license": "MIT",
+  "description": "Local-only developer activity tracker: today's per-app time and weekly top apps for editors, AI agents, browsers, and terminals. No network, no telemetry, 7-day retention.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Dev Activity Watcher",
+    "description": "Today's developer app usage at a glance with an expandable breakdown. Tracks editors, AI agents, browsers, and terminals only; reads a local status file written by the atwd daemon — nothing leaves this machine.",
+    "category": "System",
+    "aliases": [
+      "activity",
+      "dev",
+      "time",
+      "usage",
+      "atw"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "showIdleDot": true
+    },
+    "schema": [
+      {
+        "key": "showIdleDot",
+        "type": "boolean",
+        "label": "Dim the widget while idle",
+        "defaultValue": true,
+        "description": "Dims the bar item and its tooltip mentions the idle state when you are AFK."
+      }
+    ]
+  }
+}

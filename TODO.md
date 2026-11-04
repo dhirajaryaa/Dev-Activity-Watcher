@@ -35,14 +35,18 @@
 - [x] Display names configurable via config `display_names` (done in Phase 1)
 - [x] Optional: project name from VS Code title (config-gated, basename only)
 
-## Phase 4 — Omarchy shell plugin (QML)
-- [ ] `manifest.json` (bar-widget, settings schema) — passes `omarchy plugin validate`
-- [ ] Bar widget: current app, active/idle dot, today total
-- [ ] Expanded panel: today breakdown, weekly summary, data/uploads disclosure
-- [ ] Settings: tracking on/off, idle timeout, exclusions, flush interval
-- [ ] Read daemon state via `FileView { watchChanges: true }` (inotify, no polling/HTTP)
-- [ ] `IpcHandler` target for manual refresh
-- [ ] Real integration test inside omarchy-shell
+## Phase 4 — Omarchy shell plugin (QML) ✅ (2026-11-04)
+- [x] `manifest.json` (bar-widget, settings schema) — passes `omarchy plugin validate`
+- [x] Bar widget: current app, active/idle dot, today total
+- [x] Expanded panel: header + state chip, hero total, today breakdown, weekly summary, privacy facts
+- [x] Pixel-perfect alignment pass: header/hero centered in their own rows, rows keep name-left/time-right, toggle row height fixed
+- [x] Plugin renamed **Dev Activity Watcher** (manifest name/displayName; id stays `dhirajarya.atw`)
+- [x] QML font tokens: only `Style.font.body`/`title` used (running shell resolves others as undefined); explicit `fontSize` on section headers
+- [x] Read daemon state via `FileView { watchChanges: true }` (inotify, no polling/HTTP)
+- [x] `IpcHandler` target for manual refresh (`omarchy shell dhirajarya.atw toggle`)
+- [x] Developer-apps-only tracking: `tracked_categories` allowlist (editor/browser/terminal/agent) + `tracked_apps` override; `excluded_apps` still wins
+- [x] 58 unit tests green
+- [ ] Live verification: journal clean after reload; status.json contains only dev apps
 
 ## Phase 5 — Packaging
 - [ ] `install.sh` (binary → `~/.local/bin`, systemd unit `atwd.service`, plugin copy + enable + `omarchy bar put`)

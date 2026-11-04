@@ -194,7 +194,7 @@ impl Tracker {
             }
         }
         self.close_current(now);
-        if !info.excluded {
+        if info.tracked {
             self.current = Some(Segment {
                 class: info.class,
                 display_name: info.display_name,
@@ -248,7 +248,7 @@ impl Tracker {
         }
         if let Some((_norm, raw, title)) = &self.last_app {
             let info = self.classifier.classify_window(raw, title);
-            if !info.excluded {
+            if info.tracked {
                 self.current = Some(Segment {
                     class: info.class,
                     display_name: info.display_name,
@@ -310,7 +310,7 @@ impl Tracker {
         }
         if let Some((_norm, raw, title)) = &self.last_app {
             let info = self.classifier.classify_window(raw, title);
-            if !info.excluded {
+            if info.tracked {
                 return Some(info.display_name);
             }
         }
@@ -503,8 +503,10 @@ mod tests {
 
     #[test]
     fn excluded_apps_are_not_tracked() {
-        let mut t = tracker_with(&[], &["spotify"]);
-        t.handle(focus("Spotify"), day5(9, 0, 0));
+        // "code" is on the developer allowlist, so this proves the explicit
+        // exclusion wins over the allowlist.
+        let mut t = tracker_with(&[], &["code"]);
+        t.handle(focus("Code"), day5(9, 0, 0));
         assert!(t.current.is_none());
         t.handle(focus("kitty"), day5(9, 5, 0));
         assert!(t.pending.is_empty());
@@ -513,10 +515,54 @@ mod tests {
 
     #[test]
     fn excluded_apps_are_not_reopened_after_idle() {
-        let mut t = tracker_with(&[], &["spotify"]);
+        let mut t = tracker_with(&[], &["code"]);
+        t.handle(focus("code"), day5(9, 0, 0));
+        t.handle(Input::Idle, day5(9, 10, 0));
+        t.handle(Input::Active, day5(9, 20, 0));
+        assert!(t.current.is_none());
+    }
+
+    #[test]
+    fn non_dev_apps_are_not_tracked() {
+        let mut t = tracker();
+        t.handle(focus("spotify"), day5(9, 0, 0));
+        assert!(t.current.is_none());
+        t.handle(focus("SomeWeirdApp"), day5(9, 5, 0));
+        assert!(t.current.is_none());
+        assert!(t.pending.is_empty());
+        // Developer apps still track normally around them.
+        t.handle(focus("kitty"), day5(9, 10, 0));
+        assert_eq!(t.current.as_ref().unwrap().class, "kitty");
+    }
+
+    #[test]
+    fn non_dev_apps_are_not_reopened_after_idle() {
+        let mut t = tracker();
         t.handle(focus("spotify"), day5(9, 0, 0));
         t.handle(Input::Idle, day5(9, 10, 0));
         t.handle(Input::Active, day5(9, 20, 0));
+        assert!(t.current.is_none());
+    }
+
+    #[test]
+    fn tracked_apps_override_the_category_gate() {
+        let tracking = Tracking {
+            tracked_apps: vec!["spotify".to_string()],
+            ..Tracking::default()
+        };
+        let mut t = Tracker::new(Classifier::from_config(&tracking), 300, Box::new(utc_date));
+        t.handle(focus("Spotify"), day5(9, 0, 0));
+        assert_eq!(t.current.as_ref().unwrap().class, "spotify");
+    }
+
+    #[test]
+    fn switching_to_a_non_dev_app_closes_the_dev_segment() {
+        let mut t = tracker();
+        t.handle(focus("code"), day5(9, 0, 0));
+        t.handle(focus("spotify"), day5(9, 10, 0));
+        assert_eq!(t.pending.len(), 1);
+        assert_eq!(t.pending[0].class, "code");
+        assert_eq!(t.pending[0].duration(), 600);
         assert!(t.current.is_none());
     }
 

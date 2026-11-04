@@ -221,3 +221,82 @@ plugin `dhirajarya.atw`, config dir `~/.config/atw`); Rust installed via
 - `cargo test`: **47 passed, 0 failed**.
 - Live: status.json now carries `week` alongside `today`; totals still match
   the DB exactly.
+
+---
+
+## Phase 4 — Omarchy Shell Plugin (2026-11-04)
+
+The plugin is named **Dev Activity Watcher** (manifest `name` /
+`displayName`). The technical id stays `dhirajarya.atw` — it is what
+`shell.json` and the IPC target reference, and renaming it would require
+re-enabling the plugin for no visible benefit.
+
+### What was built
+
+| File | Role |
+|---|---|
+| `plugin/manifest.json` | Bar-widget plugin contract: id `dhirajarya.atw`, settings schema for `showIdleDot`, default section `right`. Passes `omarchy plugin validate`. |
+| `plugin/BarWidget.qml` | Bar item: nerd-font glyph + today's total, dimmed while idle/locked (configurable). Watches `~/.local/state/atw/status.json` with `FileView { watchChanges: true }` (inotify — no polling, no HTTP). Owns the panel plumbing (`open/close/toggle`, `IpcHandler` target `dhirajarya.atw`). |
+| `plugin/Panel.qml` | Expanded panel: header + live state chip, hero total, today's per-app rows with proportional bars, weekly top apps, widget toggle, privacy facts. |
+
+### Pixel-perfect alignment pass
+
+The user asked for element-level centering ("center what should be centered,
+not the whole window"). Verified against the clock panel's conventions
+(`/usr/share/omarchy/shell/plugins/panels/clock/Panel.qml`):
+
+- **Header** (title + state chip) and **hero total** are centered *within
+  their own full-width rows* — the clock panel's hero pattern
+  (`Item { width: parent.width }` + `anchors.horizontalCenter`, because
+  Column children must not carry anchors).
+- **Section labels** stay left-aligned (they head left-aligned lists, like
+  every Omarchy panel).
+- **List rows** keep the activity-monitor shape: name left, time right,
+  both `anchors.verticalCenter`-aligned to each other, row height =
+  `Math.max` of both texts so nothing overflows.
+- **Empty-state texts** are centered.
+- The toggle row's height now accounts for the switch being taller than the
+  label (`Math.max(dimLabel.implicitHeight, idleToggle.implicitHeight)`), so
+  the switch no longer overflows its row box.
+
+### QML font tokens (running-shell constraint)
+
+The running shell (PID 1717) only resolves `Style.font.body` and
+`Style.font.title` from plugin code — `heading`, `caption`, `small`,
+`headline` assign `undefined` (journal: "Unable to assign [undefined] to
+int"). The plugin therefore uses only those two tokens, and passes
+`fontSize: Style.font.body` explicitly to every `PanelSectionHeader` so the
+component's own `caption` default can never produce an undefined assignment.
+`Font.AllLowercase` was also undefined and was removed.
+
+### Developer-apps-only tracking (allowlist)
+
+The user asked to track **only day-to-day developer apps** — not every app.
+The classifier moved from a blocklist model to an allowlist model:
+
+- New `Category::Agent` for AI coding agents/assistants (Cursor, Windsurf,
+  Trae, Claude, ChatGPT, Gemini…). Everything `jetbrains-*` classifies as
+  Editor via a prefix rule.
+- `tracking.tracked_categories` (default `["editor", "browser", "terminal",
+  "agent"]`) — the categories that count. Media players, file managers,
+  games, and unclassified apps are ignored.
+- `tracking.tracked_apps` — individual classes to track even when their
+  category is not listed (e.g. `["postman"]`).
+- `tracking.excluded_apps` still wins over the allowlist (e.g. exclude
+  `chromium` while keeping Firefox).
+- The tracker gates segments on `AppInfo.tracked` (allowlist ∧ ¬excluded)
+  instead of `!excluded`. Non-tracked focus changes still close the open
+  segment, so time never leaks across an untracked app.
+
+### Installation state
+
+- Plugin installed at `~/.config/omarchy/plugins/dhirajarya.atw/`, enabled
+  via `omarchy plugin enable dhirajarya.atw --section right`, IPC verified
+  (`omarchy shell dhirajarya.atw toggle`).
+- Config installed at `~/.config/atw/config.toml` with the allowlist.
+
+### Test results (2026-11-04)
+
+- `cargo test`: **58 passed, 0 failed** (11 new: allowlist gating, category
+  narrowing, exclusion-wins, agent classification, jetbrains prefix,
+  tracker-level non-dev behaviour).

@@ -42,12 +42,23 @@ pub struct Tracking {
     /// Activity older than this many days is deleted.
     pub retention_days: u32,
     /// Window classes that are never tracked (exact, case-insensitive).
+    /// Wins over the allowlist below.
     pub excluded_apps: Vec<String>,
+    /// Categories that are tracked. Everything else is ignored — atw is a
+    /// developer activity tracker, not a general screen-time logger.
+    /// Built-in categories: editor, browser, terminal, agent, media, other.
+    pub tracked_categories: Vec<String>,
+    /// Window classes tracked even when their category is not in
+    /// tracked_categories, e.g. ["postman", "insomnia"].
+    pub tracked_apps: Vec<String>,
     /// Derive project names from editor window titles (basename only).
     pub editor_project_names: bool,
     /// Window class -> friendly display name.
     pub display_names: HashMap<String, String>,
 }
+
+/// Categories tracked out of the box: the day-to-day developer set.
+pub const DEFAULT_TRACKED_CATEGORIES: &[&str] = &["editor", "browser", "terminal", "agent"];
 
 impl Default for Tracking {
     fn default() -> Self {
@@ -57,6 +68,11 @@ impl Default for Tracking {
             flush_interval_seconds: DEFAULT_FLUSH_INTERVAL_SECONDS,
             retention_days: DEFAULT_RETENTION_DAYS,
             excluded_apps: Vec::new(),
+            tracked_categories: DEFAULT_TRACKED_CATEGORIES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            tracked_apps: Vec::new(),
             editor_project_names: false,
             display_names: HashMap::new(),
         }
@@ -122,7 +138,18 @@ retention_days = 7
 # basename is ever stored — never file names or paths. Off by default.
 editor_project_names = false
 
-# Window classes that are never tracked. e.g. ["spotify", "waypaper"]
+# Only developer-relevant apps are counted. These are the categories that
+# track: editor (VS Code, Zed, JetBrains…), browser, terminal, and agent
+# (Cursor, Windsurf, Claude…). Everything else — media players, file
+# managers, games, unclassified apps — is ignored.
+tracked_categories = ["editor", "browser", "terminal", "agent"]
+
+# Individual window classes to track even when their category is not
+# listed above, e.g. ["postman", "insomnia"].
+tracked_apps = []
+
+# Window classes that are never tracked, even when their category is
+# listed above. e.g. ["chromium"] to count Firefox but not Chromium.
 excluded_apps = []
 
 # Friendly names for window classes, e.g. { "foot" = "Terminal" }
@@ -197,6 +224,20 @@ mod tests {
         let cfg: Config = toml::from_str(CONFIG_TEMPLATE).unwrap();
         assert!(cfg.tracking.enabled);
         assert!(cfg.tracking.excluded_apps.is_empty());
+        // The developer-app allowlist is the default scope.
+        assert_eq!(
+            cfg.tracking.tracked_categories,
+            vec!["editor", "browser", "terminal", "agent"]
+        );
+        assert!(cfg.tracking.tracked_apps.is_empty());
+    }
+
+    #[test]
+    fn defaults_track_developer_categories_only() {
+        let t = Tracking::default();
+        assert!(t.tracked_categories.contains(&"editor".to_string()));
+        assert!(t.tracked_categories.contains(&"agent".to_string()));
+        assert!(!t.tracked_categories.contains(&"media".to_string()));
     }
 
     #[test]
