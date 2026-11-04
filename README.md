@@ -83,6 +83,22 @@ math powers the local views: bar and panel totals are the per-app union across
 all fetched devices, never a raw sum, while single-device installs see exactly
 the plain sum as before.
 
+### Deleting an app
+
+Hover an app row in the panel's today list and a delete icon appears on the
+right; confirm and every record of that application is erased — today's list,
+the week totals, the full history, the imported cloud rows, and the cloud
+database itself (its segments plus the daily aggregates it had touched are
+deleted and recomputed in one transaction). The window classes behind the
+display name are appended to `tracking.excluded_apps` in
+`~/.config/atw/config.toml`, so the daemon never records that app again;
+remove the class(es) from that list manually if you later want it tracked
+again, then restart the daemon. The same operation is available from any
+terminal as `atw delete-app "Display Name"`. Note the cross-device edge:
+the purge deletes the cloud and the machine it was run on; other machines
+still hold their local copies from before the purge — they age out through
+their own 7-day retention.
+
 ## Uninstall
 
 ```bash
@@ -108,7 +124,7 @@ you):
 | `retention_days` | `7` | Local rows older than this are deleted at midnight (only after cloud ack, when sync is active). |
 | `tracked_categories` | editor, browser, terminal, agent | Which app categories count. |
 | `tracked_apps` | `[]` | Extra window classes to track, e.g. `["postman"]`. |
-| `excluded_apps` | `[]` | Never track these, even if their category is listed. |
+| `excluded_apps` | `[]` | Never track these, even if their category is listed. The panel's delete-per-app button appends classes here automatically. |
 | `editor_project_names` | `false` | Append the project folder's basename to editor names ("Visual Studio Code · atw"). File names/paths are never stored. |
 | `display_names` | built-ins | Friendly names per window class. |
 
@@ -130,6 +146,7 @@ atw status              # print the same JSON the panel reads
 atw cleanup             # force the retention pass now
 atw sync                # push pending activity up, pull everyone else's down
 atw sync --check        # verify URL + token + schema, upload nothing
+atw delete-app "Name"   # erase an app's records everywhere + stop tracking it
 atw config set sync.url https://…      # used by the panel
 atw config set sync.token -            # reads the token from stdin (no `ps` leak)
 ```

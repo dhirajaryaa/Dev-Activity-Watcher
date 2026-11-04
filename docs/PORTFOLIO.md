@@ -108,3 +108,30 @@ atw sync --check
 ```
 
 This creates the schema if needed and counts segments; it uploads nothing.
+
+## Deleting an application's cloud history
+
+`atw delete-app "Display Name"` (also wired to the panel's hover-delete) runs
+one transaction against the same tables this document queries:
+
+1. `SELECT DISTINCT activity_date` of the app's segments, `SELECT COUNT(*)`
+   as the reported deletion count.
+2. `DELETE FROM segments WHERE app_name = ?` — gone everywhere, for every
+   device that uploaded it.
+3. `DELETE FROM daily_app WHERE app_name = ?` — the per-app aggregate rows.
+4. For each affected day: `DELETE FROM daily_unique WHERE activity_date = ?`
+   and one `RECOMPUTE_DAILY_UNIQUE` pass — the global union is rebuilt from
+   the *remaining* segments, so dashboards never show stale seconds that
+   belonged to the deleted app.
+
+Because the transaction also held the segment deletes, a failed purge can
+never leave `daily_*` rows pointing at deleted segments. Dashboards that
+were mid-query may briefly see slightly smaller day totals; the next
+recompute settles them.
+
+The purge also appends the app's window classes to
+`tracking.excluded_apps` on the machine it was run on — the cloud has no
+concept of "excluded", devices simply stop uploading that app. Other
+machines' *local* copies of the purged segments age out through their own
+retention; the ingest-log cursor used by pulls never revisits them, since
+their `ingested_at` is behind every active cursor.

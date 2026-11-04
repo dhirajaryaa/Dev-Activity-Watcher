@@ -484,6 +484,64 @@ pub struct RemoteSegment {
     pub ingested_at: i64,
 }
 
+/// Delete one application's entire cloud history in a single transaction:
+/// its segments, the per-app rows of `daily_app` that belong to it, and a
+/// recompute of `daily_unique` for every day it touched (the global union
+/// shrinks when an app's intervals disappear). Returns the pages-segment
+/// count that was removed. One transaction, so a failed delete never
+/// leaves aggregate rows behind pointing at deleted segments.
+pub fn purge_app_segments(
+    backend: &mut dyn CloudBackend,
+    app_name: &str,
+    now: i64,
+) -> Result<usize> {
+    let before = backend.query(
+        "SELECT COUNT(*) FROM segments WHERE app_name = ?",
+        vec![CloudValue::text(app_name)],
+    )?;
+    let count = int_of(before.first().and_then(|r| r.first())).unwrap_or(0);
+    if count == 0 {
+        return Ok(0);
+    }
+    let dates = backend.query(
+        "SELECT DISTINCT activity_date FROM segments WHERE app_name = ?",
+        vec![CloudValue::text(app_name)],
+    )?;
+    let mut stmts: Vec<Stmt> = Vec::new();
+    for row in &dates {
+        if let Some(CloudValue::Text(date)) = row.first() {
+            stmts.push(Stmt::new(
+                "DELETE FROM daily_unique WHERE activity_date = ?",
+                vec![CloudValue::text(date.clone())],
+            ));
+        }
+    }
+    stmts.push(Stmt::new(
+        "DELETE FROM segments WHERE app_name = ?",
+        vec![CloudValue::text(app_name)],
+    ));
+    stmts.push(Stmt::new(
+        "DELETE FROM daily_app WHERE app_name = ?",
+        vec![CloudValue::text(app_name)],
+    ));
+    for row in &dates {
+        if let Some(CloudValue::Text(date)) = row.first() {
+            let date = date.clone();
+            stmts.push(Stmt::new(
+                RECOMPUTE_DAILY_UNIQUE,
+                vec![
+                    CloudValue::text(date.clone()),
+                    CloudValue::text(date.clone()),
+                    CloudValue::text(date),
+                    CloudValue::int(now),
+                ],
+            ));
+        }
+    }
+    backend.transaction(stmts)?;
+    Ok(count as usize)
+}
+
 /// Simplicity guard: one bounded page per pull. A page exactly this full
 /// simply leaves the remainder for the next sync cycle — the cursor moves
 /// through the log a page at a time and nothing is ever re-downloaded from

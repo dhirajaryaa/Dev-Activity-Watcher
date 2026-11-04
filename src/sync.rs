@@ -455,6 +455,14 @@ fn record_failure(state_dir: &Path, report: &SyncReport, pending: u64) {
     let _ = write_record(state_dir, &record);
 }
 
+/// Open the configured cloud backend (token resolved, HTTP client ready).
+/// Shared by the sync check and by commands that talk to the database
+/// directly (purge), so backend setup appears exactly once in code.
+pub(crate) fn open_cloud_backend(config: &Config) -> std::result::Result<HttpBackend, String> {
+    let token = resolve_token(&config.sync).map_err(|e| e.to_string())?;
+    HttpBackend::new(&config.sync.url, &token).map_err(|e| e.to_string())
+}
+
 /// `atw sync --check`: verify credentials and schema without uploading.
 /// Returns a human-readable summary.
 pub fn check_connection(config: &Config) -> Result<String> {

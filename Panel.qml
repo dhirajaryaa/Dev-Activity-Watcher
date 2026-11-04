@@ -60,6 +60,35 @@ Panel {
   property bool editingCloud: false
   readonly property bool showCloudForm: syncOn && (!syncConfigured || editingCloud)
 
+  // ---- Delete (purge one app everywhere) ----
+  // First click arms the row; Confirm within the grace window removes every
+  // stored record of that app (local + cloud) and stops tracking it.
+  property string confirmDelete: ""
+  property string deleteNote: ""
+
+  Timer {
+    id: confirmReset
+    interval: 5000
+    onTriggered: root.confirmDelete = ""
+  }
+
+  Timer {
+    id: clearDeleteNote
+    interval: 6000
+    onTriggered: root.deleteNote = ""
+  }
+
+  function deleteApp(name) {
+    confirmDelete = ""
+    deleting = name
+    runPurge.appName = name
+    runPurge.running = true
+  }
+
+  // Set while the purge command runs, so the row shows feedback instead of
+  // a delete affordance (double-click protection).
+  property string deleting: ""
+
   // Never reopen into a half-finished edit or a stale success note.
   onOpenedChanged: {
     if (opened) {
@@ -69,6 +98,9 @@ Panel {
       noteText = ""
       urlInput = ""
       tokenInput = ""
+      confirmDelete = ""
+      deleteNote = ""
+      deleting = ""
     }
   }
 
@@ -266,6 +298,34 @@ Panel {
     }
   }
 
+  Process {
+    id: runPurge
+    // The name reaches the CLI as a separate argv entry; this quotes
+    // nothing in a shell command and never exposes the database.
+    property string appName: ""
+    command: [root.atwBin, "delete-app", appName]
+    onExited: function(code) {
+      var name = root.deleting
+      root.deleting = ""
+      if (code === 0) {
+        root.deleteNote = "Removed \u201C" + name + "\u201D everywhere + stopped tracking"
+        // The daemon rewrites status.json on its own after the restart.
+        restartAfterPurge.running = true
+      } else {
+        root.deleteNote = "Delete failed — try again or use atw delete-app"
+      }
+      root.clearDeleteNote.restart()
+    }
+  }
+
+  Process {
+    id: restartAfterPurge
+    command: ["systemctl", "--user", "restart", "atwd"]
+    onExited: function(code) {
+      if (code === 0 && root.hostWidget) root.hostWidget.refresh()
+    }
+  }
+
   // Guarded so the widget renders before the bar is injected (the bar-widget
   // contract instantiates this panel bare).
   readonly property color foreground: bar ? bar.barForeground : Color.popups.text
@@ -397,7 +457,11 @@ Panel {
               model: root.todayList
 
               delegate: Column {
+                id: appRow
                 required property var modelData
+                readonly property bool hovering: rowHover.containsMouse
+                readonly property bool armed: root.confirmDelete === modelData.name
+                readonly property bool working: root.deleting === modelData.name
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -405,13 +469,27 @@ Panel {
                   width: parent.width
                   height: Math.max(rowName.implicitHeight, rowTime.implicitHeight)
 
+                  MouseArea {
+                    id: rowHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    // Never eats clicks: the row itself has no click action,
+                    // and the delete/confirm zones sit above it.
+                    acceptedButtons: Qt.NoButton
+                    cursorShape: appRow.armed ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  }
+
                   Text {
                     id: rowName
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - rowTime.implicitWidth - Style.space(10)
-                    text: modelData.name
-                    color: root.foreground
+                    // The fixed right-side gutter always leaves room for the
+                    // delete affordance, so row text never jumps on hover.
+                    width: parent.width - rowTime.implicitWidth - Style.space(34)
+                    text: appRow.armed
+                        ? "Remove \u201C" + appRow.modelData.name + "\u201D?"
+                        : appRow.modelData.name
+                    color: appRow.armed ? root.urgent : root.foreground
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.body
                     elide: Text.ElideRight
@@ -419,9 +497,93 @@ Panel {
 
                   Text {
                     id: rowTime
+                    visible: !appRow.armed && !appRow.working
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.formatDuration(modelData.seconds)
+                    text: root.formatDuration(appRow.modelData.seconds)
+                    color: root.muted
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  // The delete affordance: appears on hover, sits left of the
+                  // duration on the right side of the row.
+                  Item {
+                    id: deleteZone
+                    visible: !appRow.armed && !appRow.working
+                    opacity: appRow.hovering ? 0.8 : 0
+                    Behavior on opacity {
+                      NumberAnimation { duration: 120 }
+                    }
+                    width: Style.space(16)
+                    height: parent.height
+                    anchors.right: parent.right
+                    anchors.rightMargin: rowTime.implicitWidth + Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Text {
+                      anchors.centerIn: parent
+                      text: "\u2715"
+                      color: root.urgent
+                      font.family: root.contentFontFamily
+                      font.pixelSize: Style.font.body * 0.9
+                    }
+
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        // First click arms the row; the panel closes no
+                        // records until a Confirm inside the grace window.
+                        root.confirmDelete = appRow.modelData.name
+                        root.confirmReset.restart()
+                      }
+                    }
+                  }
+
+                  Text {
+                    id: confirmButton
+                    visible: appRow.armed && !appRow.working
+                    anchors.right: cancelButton.left
+                    anchors.rightMargin: Style.space(12)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Delete all"
+                    color: root.urgent
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        root.confirmReset.stop()
+                        root.deleteApp(appRow.modelData.name)
+                      }
+                    }
+                  }
+
+                  Text {
+                    id: cancelButton
+                    visible: appRow.armed && !appRow.working
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "cancel"
+                    color: root.muted
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.confirmDelete = ""
+                    }
+                  }
+
+                  Text {
+                    visible: appRow.working
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Removing…"
                     color: root.muted
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.body
@@ -434,8 +596,20 @@ Panel {
                   radius: height / 2
                   color: root.accent
                   opacity: 0.6
+                  visible: !appRow.working
                 }
               }
+            }
+
+            Text {
+              visible: root.deleteNote !== ""
+              width: parent.width
+              text: root.deleteNote
+              color: root.foreground
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+              opacity: 0.75
+              wrapMode: Text.WordWrap
             }
 
             Text {

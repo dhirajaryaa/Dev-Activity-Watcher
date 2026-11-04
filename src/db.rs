@@ -317,6 +317,36 @@ impl Db {
         Ok(inserted)
     }
 
+    /// Window classes stored under a display name — used when purging to
+    /// stop tracking every window class that contributed that name.
+    pub fn classes_for_display(&self, display_name: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT application_class
+             FROM activity WHERE display_name = ? ORDER BY application_class",
+        )?;
+        let rows = stmt.query_map(params![display_name], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Delete **everything** stored about one display name: today, the week
+    /// list, per-day history and every synced row all read this one table,
+    /// so removing its rows removes every trace the local database has.
+    /// Returns `(rows deleted, window classes under that display name)` —
+    /// the classes were captured first, they drive the tracking exclusion.
+    pub fn purge_display_name(&self, display_name: &str) -> Result<(usize, Vec<String>)> {
+        let classes = self.classes_for_display(display_name)?;
+        let deleted = self.conn.execute(
+            "DELETE FROM activity WHERE display_name = ?",
+            params![display_name],
+        )?;
+        Ok((deleted, classes))
+    }
+
+
 
     /// Delete everything strictly older than `cutoff_date` ("YYYY-MM-DD").
     /// When `only_synced` is true (cloud sync configured), rows that were
@@ -933,5 +963,57 @@ mod tests {
         // Imported rows are born synced: they are cloud history, the upload
         // cycle never picks them up.
         assert_eq!(db.pending_count(-1).unwrap(), 0);
+    }
+
+    #[test]
+    fn purge_display_name_removes_every_trace_and_lists_classes() {
+        let dir = TempDir::new("purge");
+        let db = Db::open(&dir.0.join("activity.db")).unwrap();
+
+        // "Visual Studio Code" arrived from two window classes (the flatpak
+        // class and the URL-handler class) across two days of history.
+        let remote = |id: &str, class: &str, start: i64| crate::cloud::RemoteSegment {
+            segment_id: id.to_string(),
+            device_id: "laptop".to_string(),
+            app_name: "Visual Studio Code".to_string(),
+            app_class: class.to_string(),
+            category: "editor".to_string(),
+            start_utc: start,
+            end_utc: start + 3600,
+            duration_seconds: 3600,
+            activity_date: "1970-01-06".to_string(),
+            ingested_at: 42,
+        };
+        let vscode = vec![
+            remote("u-one", "com.microsoft.vscode", day5(9, 0, 0)),
+            remote("u-two", "code-url-handler", day5(8, 0, 0)),
+        ];
+        db.import_remote_segments(&vscode, 1000).unwrap();
+        assert_eq!(db.today_totals("1970-01-06").unwrap().len(), 1);
+
+        let firefox = crate::cloud::RemoteSegment {
+            app_name: "Firefox".to_string(),
+            app_class: "firefox".to_string(),
+            segment_id: "u-keep".to_string(),
+            ..vscode[0].clone()
+        };
+        db.import_remote_segments(&[firefox], 1000).unwrap();
+
+        // The purge collects every class behind the display name, deletes
+        // all its rows, and touches nothing else.
+        let (deleted, classes) = db.purge_display_name("Visual Studio Code").unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(classes, vec!["code-url-handler", "com.microsoft.vscode"]);
+        assert_eq!(
+            db.today_totals("1970-01-06").unwrap(),
+            vec![("Firefox".to_string(), 3600)]
+        );
+        let names: Vec<String> = db
+            .history("1970-01-01", 10)
+            .unwrap()
+            .into_iter()
+            .flat_map(|d| d.apps.into_iter().map(|(name, _)| name))
+            .collect();
+        assert_eq!(names, vec!["Firefox".to_string()]);
     }
 }

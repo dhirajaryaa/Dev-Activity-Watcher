@@ -116,6 +116,12 @@ enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Delete every record of an application — local database and, when
+    /// sync is on, the whole cloud history — and stop tracking it
+    DeleteApp {
+        /// The app's display name exactly as the panel shows it
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -150,6 +156,7 @@ where
                     set_config_cli(cli.config.as_deref(), &key, &value)
                 }
             },
+            Command::DeleteApp { name } => run_delete_app_cli(cli.config.as_deref(), &name),
         }
     });
     drop(runtime);
@@ -682,6 +689,78 @@ pub fn run_sync_cli(config_path: Option<&Path>, check: bool) -> Result<()> {
             .map(|t| format!("; last sync {t}"))
             .unwrap_or_default()
     );
+    Ok(())
+}
+
+/// `atw delete-app <display-name>` — remove every stored record of one
+/// application and stop tracking the window classes behind it.
+///
+/// - Local database: the one `activity` table feeds today, week and
+///   history, so wiping its rows for the display name removes every local
+///   trace.
+/// - Cloud (only when sync is enabled and configured): segments plus that
+///   application's daily-aggregate rows, in one transaction.
+/// - Tracking: every window class that carried the display name is
+///   appended to `tracking.excluded_apps`, so the daemon never records it
+///   again — the deletion is permanent by default.
+///
+/// Returns () (CLI only); failures of the cloud step are reported on
+/// stderr but do not undo the local deletion.
+pub fn run_delete_app_cli(config_path: Option<&Path>, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AtwError::Config("app name is empty".into()));
+    }
+    let path = config_path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(config::default_config_path);
+    let config = config::load_or_init(Some(&path))?;
+    let dirs = config.resolved_dirs();
+    let db = crate::db::Db::open(&dirs.data.join("activity.db"))?;
+    let (deleted_local, classes) = db.purge_display_name(name)?;
+    if classes.is_empty() {
+        println!("no records found for \"{name}\" — nothing to delete");
+        return Ok(());
+    }
+
+    let mut deleted_cloud = 0usize;
+    let mut cloud_warn: Option<String> = None;
+    if config.sync.enabled && config.sync.is_configured() {
+        match crate::sync::open_cloud_backend(&config) {
+            Ok(mut backend) => match cloud::purge_app_segments(&mut backend, name, crate::unix_now())
+            {
+                Ok(n) => deleted_cloud = n,
+                Err(e) => cloud_warn = Some(e.to_string()),
+            },
+            Err(e) => cloud_warn = Some(e),
+        }
+    }
+
+    // Stop tracking: one entry per window class, ignoring duplicates.
+    let mut next = config.tracking.excluded_apps.clone();
+    let mut added = 0usize;
+    for class in &classes {
+        if next.iter().all(|existing| existing != class) {
+            next.push(class.clone());
+            added += 1;
+        }
+    }
+    if added > 0 {
+        config::set_string_list(&path, "tracking.excluded_apps", &next)?;
+    }
+
+    print!("deleted {deleted_local} local");
+    if deleted_cloud > 0 {
+        print!(" and {deleted_cloud} cloud");
+    }
+    println!(" segment(s) of \"{name}\"");
+    if added > 0 {
+        println!("stopped tracking: {}", classes.join(", "));
+    }
+    if let Some(warning) = cloud_warn {
+        eprintln!("warning: cloud cleanup failed (local rows are still gone): {warning}");
+    }
+    println!("restart the daemon to apply the tracking change (the panel does this automatically)");
     Ok(())
 }
 

@@ -261,13 +261,37 @@ pub fn load_or_init(path: Option<&Path>) -> Result<Config> {
 /// value can never corrupt the file. Used by the panel (Cloud section) so the
 /// user never has to edit TOML by hand.
 pub fn set_value(path: &Path, dotted_key: &str, raw_value: &str) -> Result<()> {
+    let formatted = format_toml_value(
+        dotted_key.rsplit_once('.').map(|(_, k)| k).unwrap_or(dotted_key),
+        raw_value,
+    );
+    replace_setting(path, dotted_key, &formatted)
+}
+
+/// Same line-based editor as `set_value`, but for keys whose value is a
+/// TOML **array of strings** (e.g. `tracking.excluded_apps`). The comment
+/// structure of the file is preserved exactly like `set_value` does.
+pub fn set_string_list(path: &Path, dotted_key: &str, values: &[String]) -> Result<()> {
+    let array = toml::Value::Array(
+        values
+            .iter()
+            .map(|v| toml::Value::String(v.clone()))
+            .collect(),
+    );
+    replace_setting(path, dotted_key, &array.to_string())
+}
+
+/// Shared editor for one key inside one `[section]`: replaces the existing
+/// value line (or inserts one), preserving every comment and every other
+/// line, refusing to write anything that no longer parses, and keeping the
+/// file owner-only (it may hold the cloud token).
+fn replace_setting(path: &Path, dotted_key: &str, formatted: &str) -> Result<()> {
     let (section, key) = dotted_key.split_once('.').ok_or_else(|| {
         AtwError::Config(format!(
             "key must look like section.name (e.g. sync.url), got {dotted_key}"
         ))
     })?;
     let original = std::fs::read_to_string(path)?;
-    let formatted = format_toml_value(key, raw_value);
     let mut lines: Vec<String> = original.lines().map(|l| l.to_string()).collect();
     let header = format!("[{section}]");
     let header_idx = lines.iter().position(|l| l.trim() == header);
