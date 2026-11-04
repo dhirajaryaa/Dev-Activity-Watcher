@@ -29,11 +29,11 @@
 - [x] Hyprland `lock`/`unlock` events parsed and wired (verified on real session pending lock test)
 - [x] 43 unit tests green; live idle test passed (retroactive cut verified, stub row removed)
 
-## Phase 3 — Statistics & retention (next)
-- [ ] Daily schedule: retention tick at local midnight (in addition to startup)
-- [ ] Weekly summary query
-- [ ] Improve display name for unknown classes (config `display_names`)
-- [ ] Optional: project name from VS Code window title (config-gated, basename only)
+## Phase 3 — Statistics & retention ✅ (2026-11-04)
+- [x] Daily schedule: retention tick at local midnight (in addition to startup)
+- [x] Weekly summary in status.json (`week` map, top 12)
+- [x] Display names configurable via config `display_names` (done in Phase 1)
+- [x] Optional: project name from VS Code title (config-gated, basename only)
 
 ## Phase 4 — Omarchy shell plugin (QML)
 - [ ] `manifest.json` (bar-widget, settings schema) — passes `omarchy plugin validate`

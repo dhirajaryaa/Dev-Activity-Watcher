@@ -203,6 +203,23 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
         });
     }
 
+    // Retention tick at local midnight (covers the running session; the
+    // startup pass covers machines that were off).
+    {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    seconds_until_next_midnight(),
+                ))
+                .await;
+                if tx.send(Input::Retention).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
     // Graceful shutdown on SIGTERM / SIGINT.
     {
         let tx = tx.clone();
@@ -238,6 +255,17 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
             Input::Flush => {
                 if let Err(e) = flush_once(&mut db, &mut tracker, now) {
                     tracing::error!(target: "atw", error = %e, "flush failed");
+                }
+                write_status(&db, &tracker, &status_path, now);
+            }
+            Input::Retention => {
+                let cutoff = config::retention_cutoff_date(config.tracking.retention_days);
+                match db.retain(&cutoff) {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(target: "atw", deleted = n, cutoff = %cutoff, "midnight retention")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(target: "atw", error = %e, "midnight retention failed"),
                 }
                 write_status(&db, &tracker, &status_path, now);
             }
@@ -283,8 +311,19 @@ fn write_status(db: &Db, tracker: &Tracker, path: &Path, now: i64) {
             std::collections::BTreeMap::new()
         }
     };
+    let mut week: std::collections::BTreeMap<String, u64> =
+        match db.week_totals(&config::retention_cutoff_date(7)) {
+            Ok(rows) => rows.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!(target: "atw", error = %e, "could not read weekly totals");
+                std::collections::BTreeMap::new()
+            }
+        };
+    // Unflushed time is only in memory — add it to both summaries (today is
+    // always part of the week window).
     for (display, seconds) in tracker.today_pieces(now) {
-        *today.entry(display).or_insert(0) += seconds;
+        *today.entry(display.clone()).or_insert(0) += seconds;
+        *week.entry(display).or_insert(0) += seconds;
     }
     let status = Status {
         version: STATUS_VERSION,
@@ -292,10 +331,23 @@ fn write_status(db: &Db, tracker: &Tracker, path: &Path, now: i64) {
         state: tracker.state_str().to_string(),
         today_total_seconds: today.values().sum(),
         today,
+        week,
         updated_at: chrono::Local::now().to_rfc3339(),
     };
     if let Err(e) = write_status_file(path, &status) {
         tracing::warn!(target: "atw", error = %e, "could not write status file");
+    }
+}
+
+/// Seconds from now until the next local midnight (minimum 60).
+fn seconds_until_next_midnight() -> u64 {
+    use chrono::TimeZone;
+    let now = chrono::Local::now();
+    let tomorrow = now.date_naive() + chrono::Duration::days(1);
+    let midnight = tomorrow.and_hms_opt(0, 0, 0).expect("00:00:00 is a valid time");
+    match chrono::Local.from_local_datetime(&midnight).single() {
+        Some(t) => (t - now).num_seconds().max(60) as u64,
+        None => 3600, // DST edge: retry in an hour
     }
 }
 

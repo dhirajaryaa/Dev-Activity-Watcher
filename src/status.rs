@@ -27,6 +27,8 @@ pub struct Status {
     pub today_total_seconds: u64,
     /// Per-application seconds today, sorted by name for stable output.
     pub today: BTreeMap<String, u64>,
+    /// Per-application seconds over the last 7 days (top apps only).
+    pub week: BTreeMap<String, u64>,
     /// RFC 3339 timestamp of when this snapshot was written.
     pub updated_at: String,
 }
@@ -65,6 +67,10 @@ mod tests {
             today: BTreeMap::from([
                 ("Firefox".to_string(), 2400),
                 ("Visual Studio Code".to_string(), 9120),
+            ]),
+            week: BTreeMap::from([
+                ("Firefox".to_string(), 18_400),
+                ("Visual Studio Code".to_string(), 52_300),
             ]),
             updated_at: "2026-11-04T10:00:00+05:45".to_string(),
         };

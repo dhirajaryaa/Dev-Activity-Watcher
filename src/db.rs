@@ -194,6 +194,25 @@ impl Db {
         Ok(out)
     }
 
+    /// Top applications by total seconds since `since_date` (inclusive),
+    /// sorted by usage, capped at 12 entries for the UI.
+    pub fn week_totals(&self, since_date: &str) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT display_name, SUM(duration_seconds)
+             FROM activity WHERE date >= ?1
+             GROUP BY display_name ORDER BY 2 DESC LIMIT 12",
+        )?;
+        let rows = stmt.query_map(params![since_date], |row| {
+            let seconds: i64 = row.get(1)?;
+            Ok((row.get::<_, String>(0)?, seconds.max(0) as u64))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Delete everything strictly older than `cutoff_date` ("YYYY-MM-DD").
     /// Returns the number of deleted rows.
     pub fn retain(&self, cutoff_date: &str) -> Result<usize> {

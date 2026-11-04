@@ -194,3 +194,30 @@ plugin `dhirajarya.atw`, config dir `~/.config/atw`); Rust installed via
   real compositor; `Input::Idle` arrived exactly 10 s after the last input;
   the retroactive cut removed the 5-second stub row that had been flushed
   mid-idle — final DB total **0 s**, status `state: "idle"`. Correct.
+
+---
+
+## Phase 3 — Statistics & Retention (2026-11-04)
+
+### What was built
+
+1. **Midnight retention tick.** A task sleeps until the next *local*
+   midnight, then sends `Input::Retention`; the daemon deletes rows older
+   than the retention window and rewrites the status file. Together with the
+   startup pass, retention runs even if the machine is always on (or always
+   off). DST-safe: if local midnight is ambiguous, it retries in an hour.
+2. **Weekly summary.** `Db::week_totals` (top 12 apps over the last 7 days)
+   is merged with unflushed in-memory time and written into `status.json` as
+   the `week` map — the QML panel reads it with zero extra queries.
+3. **Editor project names (config-gated, off by default).**
+   `tracking.editor_project_names = true` appends the project folder's
+   *basename* from VS Code-style titles ("file - folder - Visual Studio
+   Code" → "Visual Studio Code · folder"). File names and paths are never
+   stored. Switching projects inside the same editor correctly cuts a new
+   segment (display name is part of the segment identity now).
+
+### Test results (2026-11-04)
+
+- `cargo test`: **47 passed, 0 failed**.
+- Live: status.json now carries `week` alongside `today`; totals still match
+  the DB exactly.

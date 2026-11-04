@@ -43,6 +43,8 @@ pub struct Tracking {
     pub retention_days: u32,
     /// Window classes that are never tracked (exact, case-insensitive).
     pub excluded_apps: Vec<String>,
+    /// Derive project names from editor window titles (basename only).
+    pub editor_project_names: bool,
     /// Window class -> friendly display name.
     pub display_names: HashMap<String, String>,
 }
@@ -55,6 +57,7 @@ impl Default for Tracking {
             flush_interval_seconds: DEFAULT_FLUSH_INTERVAL_SECONDS,
             retention_days: DEFAULT_RETENTION_DAYS,
             excluded_apps: Vec::new(),
+            editor_project_names: false,
             display_names: HashMap::new(),
         }
     }
@@ -113,6 +116,11 @@ flush_interval_seconds = 420
 
 # Activity older than this many days is deleted automatically.
 retention_days = 7
+
+# Derive project names from editor window titles, e.g. the display name
+# becomes "Visual Studio Code · myproject". Only the project folder's
+# basename is ever stored — never file names or paths. Off by default.
+editor_project_names = false
 
 # Window classes that are never tracked. e.g. ["spotify", "waypaper"]
 excluded_apps = []

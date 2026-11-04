@@ -94,6 +94,7 @@ pub struct AppInfo {
 pub struct Classifier {
     overrides: HashMap<String, String>,
     excluded: HashSet<String>,
+    editor_projects: bool,
 }
 
 impl Classifier {
@@ -105,10 +106,30 @@ impl Classifier {
                 .map(|(k, v)| (normalize(k), v.clone()))
                 .collect(),
             excluded: tracking.excluded_apps.iter().map(|s| normalize(s)).collect(),
+            editor_projects: tracking.editor_project_names,
         }
     }
 
+    /// Classify by window class only.
     pub fn classify(&self, class: &str) -> AppInfo {
+        self.classify_window(class, "")
+    }
+
+    /// Classify by window class and title. When `editor_project_names` is
+    /// enabled, editor windows get their project basename appended to the
+    /// display name (e.g. "Visual Studio Code · atw") — file names and
+    /// paths are never stored.
+    pub fn classify_window(&self, class: &str, title: &str) -> AppInfo {
+        let mut info = self.classify_base(class);
+        if self.editor_projects && info.category == Category::Editor {
+            if let Some(project) = editor_project_from_title(title) {
+                info.display_name = format!("{} · {}", info.display_name, project);
+            }
+        }
+        info
+    }
+
+    fn classify_base(&self, class: &str) -> AppInfo {
         let norm = normalize(class);
         let excluded = self.excluded.contains(&norm);
         let display_name = self
@@ -140,6 +161,22 @@ impl Classifier {
             excluded,
         }
     }
+}
+
+/// Extract the project basename from a VS Code-style window title:
+/// "file.rs - myproject - Visual Studio Code" → "myproject".
+/// Returns None when the title does not have the expected shape. Only the
+/// folder basename is ever extracted — never file names or paths.
+pub fn editor_project_from_title(title: &str) -> Option<String> {
+    let parts: Vec<&str> = title.split(" - ").map(str::trim).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let candidate = parts[parts.len() - 2];
+    if candidate.is_empty() || candidate.len() > 64 {
+        return None;
+    }
+    Some(candidate.to_string())
 }
 
 /// Window classes are matched case-insensitively.
@@ -199,5 +236,42 @@ mod tests {
         let c = classifier_with(&[], &["Spotify"]);
         assert!(c.classify("spotify").excluded);
         assert!(!c.classify("kitty").excluded);
+    }
+
+    #[test]
+    fn editor_project_from_title_parses_vscode_shape() {
+        assert_eq!(
+            editor_project_from_title("main.rs - atw - Visual Studio Code"),
+            Some("atw".to_string())
+        );
+        assert_eq!(
+            editor_project_from_title("● notes.md - diary - Visual Studio Code"),
+            Some("diary".to_string())
+        );
+        assert_eq!(editor_project_from_title("Visual Studio Code"), None);
+        assert_eq!(editor_project_from_title(""), None);
+    }
+
+    #[test]
+    fn editor_project_appended_only_when_enabled() {
+        let c = classifier_with(&[], &[]);
+        assert_eq!(
+            c.classify_window("code", "main.rs - atw - Visual Studio Code").display_name,
+            "Visual Studio Code"
+        );
+        let tracking = Tracking {
+            editor_project_names: true,
+            ..Tracking::default()
+        };
+        let c = Classifier::from_config(&tracking);
+        assert_eq!(
+            c.classify_window("code", "main.rs - atw - Visual Studio Code").display_name,
+            "Visual Studio Code · atw"
+        );
+        // Non-editor windows are never suffixed.
+        assert_eq!(
+            c.classify_window("firefox", "Example page - Mozilla Firefox").display_name,
+            "Firefox"
+        );
     }
 }

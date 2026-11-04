@@ -32,6 +32,8 @@ pub enum Input {
     Suspend,
     /// The machine resumed from suspend.
     Resume,
+    /// Daily retention tick (handled by the daemon, ignored by the machine).
+    Retention,
     /// Periodic flush tick (handled by the daemon, ignored by the machine).
     Flush,
     /// Graceful shutdown (handled by the daemon, ignored by the machine).
@@ -115,8 +117,9 @@ pub struct Tracker {
     /// Database state of the open segment: (row id, last flush time).
     /// `None` until the first flush of this segment.
     open_row: Option<(i64, i64)>,
-    /// Last focused application (class, raw class) used to resume after idle.
-    last_app: Option<(String, String)>,
+    /// Last focused application: (normalized class, raw class, title) —
+    /// used to resume after idle and for project-aware display names.
+    last_app: Option<(String, String, String)>,
     idle: bool,
     locked: bool,
     /// Closed segments never written to the database yet.
@@ -153,7 +156,7 @@ impl Tracker {
             "tracker input"
         );
         match input {
-            Input::Focus { class, title: _ } => self.on_focus(class, now),
+            Input::Focus { class, title } => self.on_focus(class, title, now),
             Input::Idle => self.on_idle(now),
             Input::Active => self.on_active(now),
             Input::Lock => self.on_lock(now),
@@ -167,13 +170,13 @@ impl Tracker {
             // post-resume AFK time is not attributed to any app.
             Input::Resume if !self.idle && !self.locked => self.maybe_reopen(now),
             Input::Resume => {}
-            Input::Flush => {}
+            Input::Flush | Input::Retention => {}
             // Shutdown ends the open segment so the final flush is complete.
             Input::Shutdown => self.close_current(now),
         }
     }
 
-    fn on_focus(&mut self, class: String, now: i64) {
+    fn on_focus(&mut self, class: String, title: String, now: i64) {
         let norm = crate::classify::normalize(&class);
         if norm.is_empty() {
             // Desktop focused: usage pauses, but we remember nothing new.
@@ -181,14 +184,16 @@ impl Tracker {
             self.last_app = None;
             return;
         }
-        self.last_app = Some((norm.clone(), class.clone()));
+        let info = self.classifier.classify_window(&class, &title);
+        self.last_app = Some((norm.clone(), class, title));
         if let Some(current) = &self.current {
-            if current.class == norm {
-                return; // same app continues (e.g. only the title changed)
+            // Same app continues (e.g. only the title changed) — unless the
+            // display name changed (project switch within the same editor).
+            if current.class == norm && current.display_name == info.display_name {
+                return;
             }
         }
         self.close_current(now);
-        let info = self.classifier.classify(&class);
         if !info.excluded {
             self.current = Some(Segment {
                 class: info.class,
@@ -241,8 +246,8 @@ impl Tracker {
         if self.locked || self.current.is_some() {
             return;
         }
-        if let Some((class, _raw)) = &self.last_app {
-            let info = self.classifier.classify(class);
+        if let Some((_norm, raw, title)) = &self.last_app {
+            let info = self.classifier.classify_window(raw, title);
             if !info.excluded {
                 self.current = Some(Segment {
                     class: info.class,
@@ -303,8 +308,8 @@ impl Tracker {
         if let Some(current) = &self.current {
             return Some(current.display_name.clone());
         }
-        if let Some((class, _raw)) = &self.last_app {
-            let info = self.classifier.classify(class);
+        if let Some((_norm, raw, title)) = &self.last_app {
+            let info = self.classifier.classify_window(raw, title);
             if !info.excluded {
                 return Some(info.display_name);
             }
@@ -569,6 +574,39 @@ mod tests {
         assert!(t.current.is_none());
         assert_eq!(t.pending.len(), 1);
         assert_eq!(t.pending[0].duration(), 420);
+    }
+
+    #[test]
+    fn editor_project_names_split_same_class_segments() {
+        let tracking = Tracking {
+            editor_project_names: true,
+            ..Tracking::default()
+        };
+        let mut t = Tracker::new(Classifier::from_config(&tracking), 300, Box::new(utc_date));
+        let focus_title = |class: &str, title: &str| Input::Focus {
+            class: class.to_string(),
+            title: title.to_string(),
+        };
+        t.handle(focus_title("code", "main.rs - atw - Visual Studio Code"), day5(9, 0, 0));
+        assert_eq!(t.current.as_ref().unwrap().display_name, "Visual Studio Code · atw");
+        // Switching projects within the same editor cuts the segment.
+        t.handle(focus_title("code", "notes.md - diary - Visual Studio Code"), day5(9, 5, 0));
+        assert_eq!(t.pending[0].display_name, "Visual Studio Code · atw");
+        assert_eq!(t.pending[0].duration(), 300);
+        assert_eq!(t.current.as_ref().unwrap().display_name, "Visual Studio Code · diary");
+    }
+
+    #[test]
+    fn editor_project_names_disabled_by_default() {
+        let mut t = tracker();
+        t.handle(
+            Input::Focus {
+                class: "code".to_string(),
+                title: "main.rs - atw - Visual Studio Code".to_string(),
+            },
+            day5(9, 0, 0),
+        );
+        assert_eq!(t.current.as_ref().unwrap().display_name, "Visual Studio Code");
     }
 
     #[test]
