@@ -1,59 +1,54 @@
-# Omarchy Activity — TODO
+# Omarchy Activity (atw) — TODO
 
 ## Phase 0 — Research ✅ (2026-11-04)
-- [x] Verify Omarchy / Hyprland / Quickshell versions
-- [x] Verify Hyprland event socket exists (`.socket2.sock`)
+- [x] Verify Omarchy 4.0.6 / Hyprland 0.56.2 / Quickshell 0.3.2
+- [x] Verify Hyprland event socket (`.socket2.sock`), command socket syntax (no newline!)
 - [x] Verify real plugin manifest contract + `omarchy plugin validate`
 - [x] Verify idle mechanism used by Omarchy shell (Quickshell IdleMonitor → ext-idle-notify-v1)
 - [x] Verify systemd user service convention (`graphical-session.target`)
-- [x] Identify missing Rust toolchain
-- [ ] Await approval of architecture + scope
+- [x] Scope locked: local-only storage, 7-day retention, no cloud sync
 
-## Phase 1 — Rust core engine
-- [ ] Install Rust toolchain (method pending approval)
-- [ ] Cargo project `omarchy-activity` (binary: `omarchy-activityd` + CLI subcommands `status`, `cleanup`)
-- [ ] Config: `~/.config/omarchy-activity/config.toml` (idle_timeout, flush_interval, exclusions, per-app display names)
-- [ ] Hyprland event socket listener (hand-rolled, reconnect with backoff)
-- [ ] Startup snapshot via `hyprctl activewindow -j`
-- [ ] Application classification (configurable mapping class → display name/category)
-- [ ] In-memory aggregation + segment state machine
-- [ ] SQLite (WAL, indexes, migrations) at `~/.local/share/omarchy-activity/`
-- [ ] Flush on app change, periodic flush (default ~7 min), flush on SIGTERM
-- [ ] Crash recovery: close orphaned open segments on startup
-- [ ] Structured logging (tracing) to `~/.local/state/omarchy-activity/`
-- [ ] Unit tests: classification, duration math, midnight boundary, app switching
+## Phase 1 — Rust core engine ✅ (2026-11-04)
+- [x] Install Rust toolchain (`omarchy pkg add rust`, Rust 1.99.1 via pkexec)
+- [x] Cargo project `atw` (binaries: `atwd` daemon + `atw` CLI: `run|status|cleanup`)
+- [x] Config: `~/.config/atw/config.toml` (idle timeout, flush interval, exclusions, display names, retention)
+- [x] Hyprland event socket listener (hand-rolled, reconnect with backoff)
+- [x] Startup snapshot via command socket with read timeout
+- [x] Application classification (configurable class → display name/category, exclusions)
+- [x] In-memory aggregation + segment state machine
+- [x] SQLite (WAL, indexes, `user_version` migrations) at `~/.local/share/atw/activity.db`
+- [x] Flush on app change, periodic flush (default 7 min), flush on SIGTERM; open segment upserted in place
+- [x] Status invariant: status.json counts only unflushed time (regression tested)
+- [x] Structured logging (tracing, stderr → journald)
+- [x] 37 unit tests green; live smoke test on Hyprland passed (status === DB sum)
 
-## Phase 2 — Idle detection
+## Phase 2 — Idle detection (next)
 - [ ] ext-idle-notify-v1 Wayland client (event-driven, no polling)
-- [ ] Pause counting on idle, resume on activity
-- [ ] Handle screen lock (Hyprland `lock` event) and suspend/wake (wall-vs-monotonic drift)
-- [ ] Tests: idle transitions, no double counting
+- [ ] Pause counting on idle, resume on activity; resume re-opens last app
+- [ ] Screen lock (Hyprland `lock` event) + suspend/wake (wall-vs-monotonic drift)
+- [ ] Verify lock events + lock (`omarchy system lock`) + manual lock shortcut
 
 ## Phase 3 — Statistics & retention
-- [ ] Daily stats query (derived from segments, indexed)
-- [ ] Weekly summary
-- [ ] 7-day retention cleanup (startup + daily tick, in transaction)
-- [ ] Manual `cleanup` subcommand
-- [ ] App exclusions
-- [ ] Status files for UI: `status.json` (now) + `today.json` (daily breakdown)
+- [ ] Daily schedule: retention tick at local midnight (in addition to startup)
+- [ ] Weekly summary query
+- [ ] Improve display name for unknown classes (config `display_names`)
+- [ ] Optional: project name from VS Code window title (config-gated, basename only)
 
 ## Phase 4 — Omarchy shell plugin (QML)
-- [ ] `manifest.json` (bar-widget kind, settings schema) — passes `omarchy plugin validate`
+- [ ] `manifest.json` (bar-widget, settings schema) — passes `omarchy plugin validate`
 - [ ] Bar widget: current app, active/idle dot, today total
-- [ ] Expanded panel: today breakdown, weekly summary, last flush time
-- [ ] Settings in panel: tracking on/off, idle timeout, exclusions, flush interval
-- [ ] Reads daemon state via `FileView watchChanges` (no polling, no HTTP)
+- [ ] Expanded panel: today breakdown, weekly summary, data/uploads disclosure
+- [ ] Settings: tracking on/off, idle timeout, exclusions, flush interval
+- [ ] Read daemon state via `FileView { watchChanges: true }` (inotify, no polling/HTTP)
 - [ ] `IpcHandler` target for manual refresh
 - [ ] Real integration test inside omarchy-shell
 
 ## Phase 5 — Packaging
-- [ ] `install.sh` (binary → `~/.local/bin`, systemd unit, plugin copy + enable + `omarchy bar put`, config never overwritten)
-- [ ] `uninstall.sh` (disable/remove unit, remove plugin + bar entry, optional data purge prompt)
-- [ ] Upgrade & rollback notes in README
-- [ ] README + privacy doc (what is stored, how to inspect/delete)
+- [ ] `install.sh` (binary → `~/.local/bin`, systemd unit `atwd.service`, plugin copy + enable + `omarchy bar put`)
+- [ ] `uninstall.sh` (stop/disable unit, remove plugin + bar entry, optional data purge with prompt)
+- [ ] Upgrade & rollback notes; README; privacy doc (what is stored, how to inspect/delete)
 
 ## Phase 6 — Benchmarking & hardening
-- [ ] Release build resource measurement (idle CPU, RAM)
-- [ ] Offline/restart/suspend/recovery integration tests on Hyprland
-- [ ] DB corruption drill (move aside + recreate + log)
-- [ ] DB size growth check over a week
+- [ ] Release-build resource measurement (idle CPU, RAM)
+- [ ] Restart/offline/suspend/recovery integration tests
+- [ ] DB size growth check over a week of use
