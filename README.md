@@ -93,9 +93,11 @@ the plain sum as before.
 
 ### Deleting an app
 
-Hover an app row in the panel's today list and a delete icon appears on the
-right; confirm and every record of that application is erased — today's list,
-the week totals, the full history, the imported cloud rows, and the cloud
+Hover an app row in the panel's today list and a delete button (✕) appears on
+the right; confirm with **Delete** (the row asks once and waits — `Delete ·
+Cancel`, nothing auto-reverts) and every record of that application is erased —
+today's list, the week totals, the full history, the imported cloud rows, and
+the cloud
 database itself (its segments plus the daily aggregates it had touched are
 deleted and recomputed in one transaction). The window classes behind the
 display name are appended to `tracking.excluded_apps` in

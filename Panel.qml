@@ -61,27 +61,39 @@ Panel {
   readonly property bool showCloudForm: syncOn && (!syncConfigured || editingCloud)
 
   // ---- Delete (purge one app everywhere) ----
-  // First click arms the row; Confirm within the grace window removes every
-  // stored record of that app (local + cloud) and stops tracking it.
+  // Hover shows a bigger ✕; clicking arms the row with a plain
+  // "Delete … everywhere?" question that STAYS until the user picks
+  // Delete or Cancel — no auto-reverting timer to race against. After a
+  // successful purge the daemon restarts so the numbers and status file
+  // settle immediately.
   property string confirmDelete: ""
   property string deleteNote: ""
 
   Timer {
-    id: confirmReset
-    interval: 5000
-    onTriggered: root.confirmDelete = ""
-  }
-
-  Timer {
     id: clearDeleteNote
-    interval: 6000
+    interval: 8000
     onTriggered: root.deleteNote = ""
   }
 
+  // If the purge command ever hangs (a spawn failure reports as a stuck
+  // running state), recover the row UI after a generous grace period.
+  Timer {
+    id: purgeWatchdog
+    interval: 20000
+    onTriggered: {
+      if (root.deleting === "") return
+      root.deleting = ""
+      root.deleteNote = "Delete timed out — run \u201Catw delete-app\u201D in a terminal"
+      root.clearDeleteNote.restart()
+    }
+  }
+
   function deleteApp(name) {
+    if (runPurge.running) return // one purge at a time
     confirmDelete = ""
     deleting = name
     runPurge.appName = name
+    purgeWatchdog.restart()
     runPurge.running = true
   }
 
@@ -300,19 +312,28 @@ Panel {
 
   Process {
     id: runPurge
-    // The name reaches the CLI as a separate argv entry; this quotes
-    // nothing in a shell command and never exposes the database.
+    // Wrapped in sh with an existence check: a missing binary becomes a
+    // clean non-zero exit (the panel shows the failure note) instead of a
+    // spawn error that leaves the row stuck on "Deleting…".
+    // The name reaches the CLI as a separate argv entry — never inside a
+    // quoted string — so any app name is safe.
     property string appName: ""
-    command: [root.atwBin, "delete-app", appName]
+    command: ["sh", "-c",
+      "if [ -x \"$HOME/.local/bin/atw\" ]; then " +
+      "exec \"$HOME/.local/bin/atw\" delete-app \"$1\"; " +
+      "else echo \"atw binary missing\" >&2; exit 127; fi",
+      "sh", appName]
     onExited: function(code) {
+      root.purgeWatchdog.stop()
       var name = root.deleting
       root.deleting = ""
       if (code === 0) {
-        root.deleteNote = "Removed \u201C" + name + "\u201D everywhere + stopped tracking"
-        // The daemon rewrites status.json on its own after the restart.
-        restartAfterPurge.running = true
+        root.deleteNote = "Deleted \u201C" + name + "\u201D — today, history and cloud cleaned"
+        // The daemon rewrites status.json right at startup, so the
+        // refreshed totals appear the moment the restart completes.
+        root.restartAfterPurge.running = true
       } else {
-        root.deleteNote = "Delete failed — try again or use atw delete-app"
+        root.deleteNote = "Delete failed — \u201Catw delete-app\u201D exited " + code
       }
       root.clearDeleteNote.restart()
     }
@@ -476,7 +497,6 @@ Panel {
                     // Never eats clicks: the row itself has no click action,
                     // and the delete/confirm zones sit above it.
                     acceptedButtons: Qt.NoButton
-                    cursorShape: appRow.armed ? Qt.PointingHandCursor : Qt.ArrowCursor
                   }
 
                   Text {
@@ -484,10 +504,11 @@ Panel {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
                     // The fixed right-side gutter always leaves room for the
-                    // delete affordance, so row text never jumps on hover.
-                    width: parent.width - rowTime.implicitWidth - Style.space(34)
+                    // delete affordance and the confirm buttons, so row text
+                    // never jumps when the row arms.
+                    width: parent.width - rowTime.implicitWidth - Style.space(46)
                     text: appRow.armed
-                        ? "Remove \u201C" + appRow.modelData.name + "\u201D?"
+                        ? "Delete \u201C" + appRow.modelData.name + "\u201D everywhere?"
                         : appRow.modelData.name
                     color: appRow.armed ? root.urgent : root.foreground
                     font.family: root.contentFontFamily
@@ -506,37 +527,48 @@ Panel {
                     font.pixelSize: Style.font.body
                   }
 
-                  // The delete affordance: appears on hover, sits left of the
-                  // duration on the right side of the row.
+                  // The delete affordance: a pill-sized ✕ that lights up over
+                  // the row. It sits left of the duration on the right side,
+                  // and the "everywhere?" question is the only thing the user
+                  // has to read — no jargon on the confirm step.
                   Item {
                     id: deleteZone
                     visible: !appRow.armed && !appRow.working
-                    opacity: appRow.hovering ? 0.8 : 0
+                    opacity: appRow.hovering ? 1 : 0
                     Behavior on opacity {
                       NumberAnimation { duration: 120 }
                     }
-                    width: Style.space(16)
+                    width: Style.space(24)
                     height: parent.height
                     anchors.right: parent.right
-                    anchors.rightMargin: rowTime.implicitWidth + Style.space(10)
+                    anchors.rightMargin: rowTime.implicitWidth + Style.space(12)
                     anchors.verticalCenter: parent.verticalCenter
+                    property bool zoneHover: zoneMouse.containsMouse
+
+                    Rectangle {
+                      anchors.fill: parent
+                      radius: height / 2
+                      color: Qt.alpha(root.urgent, deleteZone.zoneHover ? 0.22 : 0.10)
+                    }
 
                     Text {
                       anchors.centerIn: parent
                       text: "\u2715"
                       color: root.urgent
                       font.family: root.contentFontFamily
-                      font.pixelSize: Style.font.body * 0.9
+                      font.pixelSize: Style.font.body * 1.1
+                      font.bold: true
                     }
 
                     MouseArea {
+                      id: zoneMouse
                       anchors.fill: parent
+                      hoverEnabled: true
                       cursorShape: Qt.PointingHandCursor
                       onClicked: {
-                        // First click arms the row; the panel closes no
-                        // records until a Confirm inside the grace window.
+                        // The row asks once and STAYS asked until the user
+                        // picks Delete or Cancel — no dropping off.
                         root.confirmDelete = appRow.modelData.name
-                        root.confirmReset.restart()
                       }
                     }
                   }
@@ -545,20 +577,18 @@ Panel {
                     id: confirmButton
                     visible: appRow.armed && !appRow.working
                     anchors.right: cancelButton.left
-                    anchors.rightMargin: Style.space(12)
+                    anchors.rightMargin: Style.space(14)
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Delete all"
+                    text: "Delete"
                     color: root.urgent
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.body
+                    font.bold: true
 
                     MouseArea {
                       anchors.fill: parent
                       cursorShape: Qt.PointingHandCursor
-                      onClicked: {
-                        root.confirmReset.stop()
-                        root.deleteApp(appRow.modelData.name)
-                      }
+                      onClicked: root.deleteApp(appRow.modelData.name)
                     }
                   }
 
@@ -567,7 +597,7 @@ Panel {
                     visible: appRow.armed && !appRow.working
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "cancel"
+                    text: "Cancel"
                     color: root.muted
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.body
@@ -580,10 +610,11 @@ Panel {
                   }
 
                   Text {
+                    id: workingLabel
                     visible: appRow.working
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Removing…"
+                    text: "Deleting…"
                     color: root.muted
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.body
@@ -605,10 +636,12 @@ Panel {
               visible: root.deleteNote !== ""
               width: parent.width
               text: root.deleteNote
-              color: root.foreground
+              color: root.deleteNote.indexOf("failed") >= 0
+                      || root.deleteNote.indexOf("timed out") >= 0
+                   ? root.urgent : root.foreground
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
-              opacity: 0.75
+              opacity: 0.85
               wrapMode: Text.WordWrap
             }
 
