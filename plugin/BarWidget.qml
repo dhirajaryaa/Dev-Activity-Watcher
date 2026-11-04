@@ -74,8 +74,8 @@ BarWidget {
   }
 
   readonly property string barText: root.vertical
-    ? "\uf2b2"
-    : "\uf2b2 " + formatDuration(displaySeconds)
+    ? "\uf1da"
+    : "\uf1da " + formatDuration(displaySeconds)
   readonly property string barTooltip: displayApp !== ""
     ? displayApp + " — " + displayState
     : "Dev Activity Watcher"
