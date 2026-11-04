@@ -33,7 +33,14 @@ icon → icon + hours → icon + hours + minutes.
 ## Install
 
 ```bash
-cd ~/Work/atw
+omarchy plugin add https://github.com/dhirajaryaa/Dev-Activity-Watcher
+```
+
+Or clone and build from source:
+
+```bash
+git clone https://github.com/dhirajaryaa/Dev-Activity-Watcher.git ~/.local/share/omarchy/plugins/dhirajarya.atw
+cd ~/.local/share/omarchy/plugins/dhirajarya.atw
 packaging/install.sh
 ```
 

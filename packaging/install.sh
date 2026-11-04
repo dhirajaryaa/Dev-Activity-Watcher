@@ -7,7 +7,7 @@
 # optional and only talks to the Turso database you configure in the panel.
 set -euo pipefail
 
-ATW_HOME="${ATW_HOME:-$HOME/Work/atw}"
+ATW_HOME="${ATW_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PLUGIN_ID="dhirajarya.atw"
 PLUGIN_SRC="$ATW_HOME/plugin"
 PLUGIN_DST="$HOME/.config/omarchy/plugins/$PLUGIN_ID"

@@ -1,6 +1,6 @@
 [Unit]
 Description=Dev Activity Watcher daemon (atwd) — local-first developer activity tracking
-Documentation=file://%h/Work/atw/README.md
+Documentation=https://github.com/dhirajaryaa/Dev-Activity-Watcher
 PartOf=graphical-session.target
 After=graphical-session.target
 

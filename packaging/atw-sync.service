@@ -1,6 +1,6 @@
 [Unit]
 Description=Dev Activity Watcher — sync pending activity now
-Documentation=file://%h/Work/atw/README.md
+Documentation=https://github.com/dhirajaryaa/Dev-Activity-Watcher
 After=graphical-session.target
 
 [Service]
