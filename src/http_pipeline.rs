@@ -29,16 +29,24 @@ impl HttpBackend {
         if token.trim().is_empty() {
             return Err(AtwError::Config("sync token is empty".into()));
         }
-        // Accept both libsql:// and https:// — normalize to https.
-        let url = url
+        // Accept both libsql:// and https:// — normalize to https and always
+        // target the Hrana endpoint. Turso's root path serves a different
+        // JSON API ("missing field statements"), so appending /v2/pipeline
+        // is required.
+        let base = url
             .trim()
             .trim_end_matches('/')
             .replacen("libsql://", "https://", 1);
-        if !url.starts_with("https://") {
+        if !base.starts_with("https://") {
             return Err(AtwError::Config(format!(
-                "sync.url must be an https URL, got {url}"
+                "sync.url must be an https URL, got {base}"
             )));
         }
+        let url = if base.ends_with("/v2/pipeline") {
+            base
+        } else {
+            format!("{base}/v2/pipeline")
+        };
         let agent = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent("atw/0.1")
@@ -133,7 +141,11 @@ impl CloudBackend for HttpBackend {
         };
 
         // Round trip 2: settle the transaction and free the connection.
-        let settle = if failure.is_some() { "ROLLBACK" } else { "COMMIT" };
+        let settle = if failure.is_some() {
+            "ROLLBACK"
+        } else {
+            "COMMIT"
+        };
         let (_, results) = self.pipeline(
             Some(&baton),
             vec![
@@ -148,9 +160,10 @@ impl CloudBackend for HttpBackend {
         if let Some(message) = failure {
             return Err(constraint_or_http(&message));
         }
-        if let Some(err) = results.iter().find(|r| {
-            r.get("type").and_then(|t| t.as_str()) == Some("error")
-        }) {
+        if let Some(err) = results
+            .iter()
+            .find(|r| r.get("type").and_then(|t| t.as_str()) == Some("error"))
+        {
             let message = err
                 .pointer("/error/message")
                 .and_then(|m| m.as_str())
@@ -297,7 +310,9 @@ mod tests {
     #[test]
     fn url_normalization_rules() {
         let b = HttpBackend::new("libsql://db-org.turso.io/", "tok").unwrap();
-        assert_eq!(b.url, "https://db-org.turso.io");
+        assert_eq!(b.url, "https://db-org.turso.io/v2/pipeline");
+        let b = HttpBackend::new("https://db-org.turso.io/v2/pipeline", "tok").unwrap();
+        assert_eq!(b.url, "https://db-org.turso.io/v2/pipeline");
         assert!(HttpBackend::new("http://insecure.example", "tok").is_err());
         assert!(HttpBackend::new("", "tok").is_err());
         assert!(HttpBackend::new("https://x.turso.io", "").is_err());
