@@ -2,8 +2,9 @@
 name = "atw"
 version = "0.1.0"
 edition = "2021"
-description = "Activity Time Watch — local-only app usage tracker for Omarchy/Hyprland"
+description = "Dev Activity Watcher — privacy-first developer activity tracker for Omarchy/Hyprland"
 license = "MIT"
+readme = "README.md"
 
 [lib]
 name = "atw"
