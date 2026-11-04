@@ -23,6 +23,10 @@ install -m 755 "$ATW_HOME/target/release/atwd" "$BIN_DST"
 install -m 755 "$ATW_HOME/target/release/atw"  "$HOME/.local/bin/atw"
 
 echo "==> Installing systemd user units"
+# The service sandbox (ReadWritePaths) requires these paths to exist before
+# the daemon can start; the daemon creates them itself, but too late for
+# systemd's mount namespace setup.
+mkdir -p ~/.local/share/atw ~/.local/state/atw ~/.config/atw
 mkdir -p "$HOME/.config/systemd/user"
 install -m 644 "$ATW_HOME/packaging/atwd.service" "$UNIT_DST"
 install -m 644 "$ATW_HOME/packaging/atw-sync.service" "$HOME/.config/systemd/user/atw-sync.service"
