@@ -305,7 +305,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: "Tracking behaviour (idle timeout, tracked apps, retention) lives in ~/.config/atw/config.toml — restart atwd after editing: systemctl --user restart atwd"
+              text: "Config: ~/.config/atw/config.toml — restart atwd after editing"
               color: root.muted
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
@@ -322,7 +322,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "Everything stays on this machine. Only developer apps — editors, AI agents, browsers, terminals — are tracked. Activity is stored in ~/.local/share/atw/activity.db and nothing is ever sent anywhere — no network, no telemetry. Records older than 7 days are deleted automatically (atw cleanup forces it now)."
+            text: "Local only — no network, no telemetry. Stored in ~/.local/share/atw, deleted after 7 days."
             color: root.muted
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.body
