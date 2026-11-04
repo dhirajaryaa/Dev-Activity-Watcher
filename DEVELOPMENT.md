@@ -144,3 +144,53 @@ plugin `dhirajarya.atw`, config dir `~/.config/atw`); Rust installed via
 3. The event socket (`socket2`) streams the classic line protocol
    (`activewindow>>class,title`, `openwindow`, `closewindow`, …). The
    command socket syntax differs from old Hyprland docs — verified empirically.
+
+---
+
+## Phase 2 — Idle Detection (2026-11-04)
+
+### What was built
+
+| File | Role |
+|---|---|
+| `src/idle.rs` | Wayland client binding `ext-idle-notify-v1` (the same protocol Omarchy's shell uses). Dedicated OS thread with a blocking event loop; compositor pushes `idled`/`resumed` events → `Input::Idle`/`Input::Active`. Zero polling. Reconnects with backoff if the compositor restarts. |
+| `src/suspend.rs` | Suspend/resume detection with **no extra dependencies**: `CLOCK_MONOTONIC` (Rust `Instant`) freezes during sleep while the wall clock advances, so a growing wall−monotonic offset reveals a suspend. Segments are cut at the last moment the machine was known to be awake. |
+
+### Design decisions (why)
+
+1. **Inhibitor-respecting idle.** We use `get_idle_notification` (not the v2
+   `get_input_idle_notification`): video players and "stay awake" toggles
+   hold an idle inhibitor, and the compositor then never reports idle —
+   screen-on time counts as activity, matching the desktop's own semantics.
+2. **Retroactive cut on idle.** The compositor fires `idled` exactly
+   `timeout` seconds after the last input; the segment is closed at
+   `now − idle_timeout`, so AFK time is never counted.
+3. **Suspend semantics.** On drift detection: close the open segment at the
+   last awake moment, then — only if the user was *active* before sleeping —
+   re-open the last app at resume time. If they were idle/locked before,
+   nothing re-opens until a real event, so post-resume AFK is not attributed.
+   A 10 s threshold ignores small NTP adjustments.
+4. **Dedicated thread for Wayland.** The protocol is push-only; a blocking
+   `blocking_dispatch` loop on its own thread is simpler and cheaper than
+   async Wayland integration. Events cross into the async world via
+   `blocking_send` on the existing channel.
+
+### API notes (wayland-client 0.31.15 / wayland-protocols 0.32.13)
+
+- `Dispatch::event` takes `state: &mut State` as an explicit first
+  parameter — not a `&mut self` receiver.
+- The notification requires a `wl_seat`: bind both `ext_idle_notifier_v1`
+  (≤ v2) and `wl_seat` globals; they arrive in arbitrary order, so the
+  notification is created once both are present.
+- Events are named **`idled`** and `resumed` (the XML renamed `fired`).
+- The event loop method is `blocking_dispatch` (plain `dispatch` does not
+  exist; `dispatch_pending` is the non-blocking variant).
+
+### Test results (2026-11-04)
+
+- `cargo test`: **43 passed, 0 failed** (adds suspend-detector math and
+  suspend/resume tracker transitions).
+- Live test (10 s idle timeout, isolated dirs): `idle monitor armed` on the
+  real compositor; `Input::Idle` arrived exactly 10 s after the last input;
+  the retroactive cut removed the 5-second stub row that had been flushed
+  mid-idle — final DB total **0 s**, status `state: "idle"`. Correct.

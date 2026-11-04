@@ -27,6 +27,11 @@ pub enum Input {
     Lock,
     /// Screen was unlocked.
     Unlock,
+    /// The machine was suspended (detected via wall/monotonic clock drift).
+    /// `now` carries the estimated moment the machine went to sleep.
+    Suspend,
+    /// The machine resumed from suspend.
+    Resume,
     /// Periodic flush tick (handled by the daemon, ignored by the machine).
     Flush,
     /// Graceful shutdown (handled by the daemon, ignored by the machine).
@@ -153,6 +158,15 @@ impl Tracker {
             Input::Active => self.on_active(now),
             Input::Lock => self.on_lock(now),
             Input::Unlock => self.on_unlock(now),
+            // Machine slept: end the open segment at the last observed
+            // moment the machine was awake (passed as `now`).
+            Input::Suspend => self.close_current(now),
+            // Machine woke up: if the user was active before sleeping,
+            // re-open the last app right away. If they were idle or locked
+            // before, wait for a real event (`resumed` / focus change) so
+            // post-resume AFK time is not attributed to any app.
+            Input::Resume if !self.idle && !self.locked => self.maybe_reopen(now),
+            Input::Resume => {}
             Input::Flush => {}
             // Shutdown ends the open segment so the final flush is complete.
             Input::Shutdown => self.close_current(now),
@@ -555,6 +569,37 @@ mod tests {
         assert!(t.current.is_none());
         assert_eq!(t.pending.len(), 1);
         assert_eq!(t.pending[0].duration(), 420);
+    }
+
+    #[test]
+    fn suspend_cuts_segment_and_resume_reopens_when_active() {
+        let mut t = tracker();
+        t.handle(focus("code"), day5(9, 0, 0));
+        // Suspend detected: the segment is cut at the last awake moment.
+        t.handle(Input::Suspend, day5(9, 10, 0));
+        assert_eq!(t.pending[0].duration(), 600);
+        assert!(t.current.is_none());
+        // Resume 2 hours later: the user was active before sleeping, so the
+        // last app is re-opened at the resume time (not during sleep).
+        t.handle(Input::Resume, day5(11, 10, 0));
+        let current = t.current.as_ref().unwrap();
+        assert_eq!(current.class, "code");
+        assert_eq!(current.started_at, day5(11, 10, 0));
+    }
+
+    #[test]
+    fn suspend_while_idle_does_not_reopen_on_resume() {
+        let mut t = tracker();
+        t.handle(focus("code"), day5(9, 0, 0));
+        t.handle(Input::Idle, day5(9, 20, 0));
+        t.handle(Input::Suspend, day5(9, 30, 0));
+        t.handle(Input::Resume, day5(11, 30, 0));
+        // The user was AFK before the machine slept; nothing is re-opened
+        // until a real event (input or focus change) arrives.
+        assert!(t.current.is_none());
+        // Real input after resume re-opens the app.
+        t.handle(Input::Active, day5(11, 31, 0));
+        assert!(t.current.is_some());
     }
 
     #[test]

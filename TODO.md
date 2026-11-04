@@ -22,13 +22,14 @@
 - [x] Structured logging (tracing, stderr → journald)
 - [x] 37 unit tests green; live smoke test on Hyprland passed (status === DB sum)
 
-## Phase 2 — Idle detection (next)
-- [ ] ext-idle-notify-v1 Wayland client (event-driven, no polling)
-- [ ] Pause counting on idle, resume on activity; resume re-opens last app
-- [ ] Screen lock (Hyprland `lock` event) + suspend/wake (wall-vs-monotonic drift)
-- [ ] Verify lock events + lock (`omarchy system lock`) + manual lock shortcut
+## Phase 2 — Idle detection ✅ (2026-11-04)
+- [x] ext-idle-notify-v1 Wayland client (event-driven, no polling; inhibitor-respecting)
+- [x] Pause counting on idle, resume on activity; resume re-opens last app
+- [x] Suspend/wake detection via wall-vs-monotonic clock drift (no extra deps)
+- [x] Hyprland `lock`/`unlock` events parsed and wired (verified on real session pending lock test)
+- [x] 43 unit tests green; live idle test passed (retroactive cut verified, stub row removed)
 
-## Phase 3 — Statistics & retention
+## Phase 3 — Statistics & retention (next)
 - [ ] Daily schedule: retention tick at local midnight (in addition to startup)
 - [ ] Weekly summary query
 - [ ] Improve display name for unknown classes (config `display_names`)

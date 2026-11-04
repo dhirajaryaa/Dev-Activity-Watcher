@@ -14,7 +14,9 @@ pub mod classify;
 pub mod config;
 pub mod db;
 pub mod hypr;
+pub mod idle;
 pub mod status;
+pub mod suspend;
 pub mod tracker;
 
 use std::ffi::OsString;
@@ -180,6 +182,10 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
     // Hyprland events (with automatic reconnect + re-snapshot).
     tokio::spawn(hypr::run_event_listener(tx.clone()));
 
+    // Idle detection via the compositor (ext-idle-notify-v1). The thread
+    // reconnects on its own if the compositor restarts.
+    idle::spawn(tx.clone(), config.tracking.idle_timeout_seconds);
+
     // Periodic flush of the open segment.
     {
         let tx = tx.clone();
@@ -213,8 +219,21 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
         });
     }
 
+    // Suspend/resume detection: the offset between the wall clock and the
+    // (suspend-frozen) monotonic clock grows while the machine sleeps.
+    let mono_start = std::time::Instant::now();
+    let mut suspend_detector = suspend::SuspendDetector::new(10_000);
+
     while let Some(input) = rx.recv().await {
         let now = unix_now();
+        if let Some(suspend_start) = suspend_detector.observe(
+            now * 1000,
+            mono_start.elapsed().as_millis() as i64,
+        ) {
+            tracing::info!(target: "atw", at = suspend_start, "suspend/resume detected");
+            tracker.handle(Input::Suspend, suspend_start);
+            tracker.handle(Input::Resume, now);
+        }
         match input {
             Input::Flush => {
                 if let Err(e) = flush_once(&mut db, &mut tracker, now) {
