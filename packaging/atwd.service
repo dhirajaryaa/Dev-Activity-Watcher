@@ -1,0 +1,26 @@
+[Unit]
+Description=Dev Activity Watcher daemon (atwd) — local-only developer activity tracking
+Documentation=file://%h/Work/atw/README.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/atwd
+Restart=on-failure
+RestartSec=5
+
+# The daemon talks to Hyprland and Wayland directly; make sure it can
+# reach the session's runtime directory (same pattern as voxtype.service).
+Environment=XDG_RUNTIME_DIR=%t
+
+# Hardening: nothing here needs authority or networking.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/atw %h/.local/state/atw %h/.config/atw
+PrivateNetwork=true
+IPAddressDeny=any
+
+[Install]
+WantedBy=graphical-session.target

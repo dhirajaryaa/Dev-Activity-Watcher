@@ -300,3 +300,43 @@ The classifier moved from a blocklist model to an allowlist model:
 - `cargo test`: **58 passed, 0 failed** (11 new: allowlist gating, category
   narrowing, exclusion-wins, agent classification, jetbrains prefix,
   tracker-level non-dev behaviour).
+
+---
+
+## Phase 5 — Packaging (2026-11-04)
+
+| File | Role |
+|---|---|
+| `packaging/atwd.service` | systemd user unit (voxtype pattern: `PartOf`/`After=graphical-session.target`, `Restart=on-failure`, `XDG_RUNTIME_DIR=%t`) plus hardening — `NoNewPrivileges`, `ProtectSystem=strict`, `ReadWritePaths` limited to the three atw dirs, `PrivateNetwork=true`, `IPAddressDeny=any`. The daemon cannot reach the network even if a future bug tried. |
+| `packaging/install.sh` | Builds release, installs `~/.local/bin/atwd`, installs + enables the unit, copies the plugin into `~/.config/omarchy/plugins/dhirajarya.atw/`, enables it in the right bar section if not already enabled. Idempotent. |
+| `packaging/uninstall.sh` | Stops/disables the unit, removes binary + unit + plugin. Data is kept unless `--purge`. |
+| `README.md` / `PRIVACY.md` | User docs; the privacy doc documents the exact DB schema (verified against `.schema`), how to inspect with sqlite3, and every deletion path. |
+
+## Phase 6 — Benchmarks & hardening (2026-11-04)
+
+Measured on the running release daemon (systemd-managed):
+
+| Metric | Value |
+|---|---|
+| Idle CPU (10 s window) | **0 jiffies → 0.0%** of one core |
+| RAM (RSS) | **5.6 MB** (peak 4 MB reported by systemd earlier in the session) |
+| Binary size | **2.5 MB** |
+| DB size | 16 KB after a full test day; growth ≈ one ~100 B row per app segment, bounded by 7-day retention |
+
+Hardening verified live: the daemon was restarted repeatedly during
+development (manual runs + systemd); every start re-queried the active
+window via the command socket and resumed with correct totals — the
+status === DB invariant held every time. Suspend/resume transitions are
+unit-tested via the clock-drift detector.
+
+### Final installation state
+
+- `~/.local/bin/atwd` — release binary
+- `atwd.service` — enabled, running (`systemctl --user status atwd`)
+- Plugin `dhirajarya.atw` ("Dev Activity Watcher") — installed + enabled, right bar section
+- Config `~/.config/atw/config.toml` — developer-app allowlist
+- Data `~/.local/share/atw/activity.db` — local only, 7-day retention
+
+### Test results (final)
+
+- `cargo test`: **60 passed, 0 failed**.
