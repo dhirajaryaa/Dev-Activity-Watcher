@@ -654,9 +654,16 @@ mod tests {
         let segs = vec![seg("s1", "VS Code", base, base + H, "1970-01-06")];
         upload_batch(&mut b, "dev1", "b1", &segs, 100).unwrap();
         // Same batch id again (network retry after lost ack): acked as dup.
-        assert_eq!(upload_batch(&mut b, "dev1", "b1", &segs, 200).unwrap(), UploadOutcome::Duplicate);
+        assert_eq!(
+            upload_batch(&mut b, "dev1", "b1", &segs, 200).unwrap(),
+            UploadOutcome::Duplicate
+        );
         assert_eq!(count(&mut b, "segments"), 1, "no double insert");
-        assert_eq!(daily_app(&mut b, "1970-01-06", "VS Code").0, H, "aggregate unchanged");
+        assert_eq!(
+            daily_app(&mut b, "1970-01-06", "VS Code").0,
+            H,
+            "aggregate unchanged"
+        );
         assert_eq!(count(&mut b, "batches"), 1);
     }
 
@@ -679,8 +686,20 @@ mod tests {
         let mut b = backend();
         let base = 5 * DAY;
         // Desktop VS Code 9–17, laptop VS Code 13–21 (overlapping).
-        let desktop = vec![seg("d1", "VS Code", base + 9 * H, base + 17 * H, "1970-01-06")];
-        let laptop = vec![seg("l1", "VS Code", base + 13 * H, base + 21 * H, "1970-01-06")];
+        let desktop = vec![seg(
+            "d1",
+            "VS Code",
+            base + 9 * H,
+            base + 17 * H,
+            "1970-01-06",
+        )];
+        let laptop = vec![seg(
+            "l1",
+            "VS Code",
+            base + 13 * H,
+            base + 21 * H,
+            "1970-01-06",
+        )];
         upload_batch(&mut b, "desktop", "bd", &desktop, 100).unwrap();
         upload_batch(&mut b, "laptop", "bl", &laptop, 101).unwrap();
         // Combined Σ = 16 h (exceeds nothing here, but is Σ), merged = 12 h.
@@ -693,8 +712,20 @@ mod tests {
         let mut b = backend();
         let base = 5 * DAY;
         // Desktop VS Code 9–17, laptop terminal 13–15: 2 h cross-app overlap.
-        let d = vec![seg("d1", "VS Code", base + 9 * H, base + 17 * H, "1970-01-06")];
-        let l = vec![seg("l1", "Terminal", base + 13 * H, base + 15 * H, "1970-01-06")];
+        let d = vec![seg(
+            "d1",
+            "VS Code",
+            base + 9 * H,
+            base + 17 * H,
+            "1970-01-06",
+        )];
+        let l = vec![seg(
+            "l1",
+            "Terminal",
+            base + 13 * H,
+            base + 15 * H,
+            "1970-01-06",
+        )];
         upload_batch(&mut b, "desktop", "bd", &d, 100).unwrap();
         upload_batch(&mut b, "laptop", "bl", &l, 101).unwrap();
         // Unique = 8 h (never 10 h); the 2 h is attributed to overlap.
@@ -709,10 +740,19 @@ mod tests {
         let l = vec![seg("l1", "VS Code", base + H, base + 2 * H, "1970-01-06")];
         upload_batch(&mut b, "laptop", "bl", &l, 100).unwrap();
         // …then the offline desktop arrives a day later with overlapping time.
-        let d = vec![seg("d1", "VS Code", base + 90 * 60, base + 3 * H, "1970-01-06")];
+        let d = vec![seg(
+            "d1",
+            "VS Code",
+            base + 90 * 60,
+            base + 3 * H,
+            "1970-01-06",
+        )];
         upload_batch(&mut b, "desktop", "bd", &d, 200).unwrap();
         // Merged: 1:00–3:00 = 2 h; combined = 1 h + 1.5 h = 2.5 h.
-        assert_eq!(daily_app(&mut b, "1970-01-06", "VS Code"), (3 * H / 2 + H, 2 * H));
+        assert_eq!(
+            daily_app(&mut b, "1970-01-06", "VS Code"),
+            (3 * H / 2 + H, 2 * H)
+        );
         assert_eq!(daily_unique(&mut b, "1970-01-06"), (2 * H, 0));
     }
 
@@ -739,19 +779,20 @@ mod tests {
         let segs = vec![seg("s1", "VS Code", base, base + H, "1970-01-06")];
         // A statement with deliberately broken SQL fails mid-transaction;
         // nothing — segment, batch, aggregates — may survive.
-        let mut stmts: Vec<Stmt> = Vec::new();
-        stmts.push(Stmt::new(
-            "INSERT INTO batches (batch_id, device_id, segment_count, processed_at) VALUES (?, ?, ?, ?)",
-            vec![CloudValue::text("bx"), CloudValue::text("dev"), CloudValue::int(1), CloudValue::int(1)],
-        ));
-        stmts.push(Stmt::new(
-            "INSERT INTO segments (segment_id) VALUES (?)",
-            vec![CloudValue::text("s1")], // missing NOT NULL columns → fails
-        ));
-        stmts.push(Stmt::new(
-            "DELETE FROM daily_app WHERE activity_date = '1970-01-06'",
-            vec![],
-        ));
+        let stmts: Vec<Stmt> = vec![
+            Stmt::new(
+                "INSERT INTO batches (batch_id, device_id, segment_count, processed_at) VALUES (?, ?, ?, ?)",
+                vec![CloudValue::text("bx"), CloudValue::text("dev"), CloudValue::int(1), CloudValue::int(1)],
+            ),
+            Stmt::new(
+                "INSERT INTO segments (segment_id) VALUES (?)",
+                vec![CloudValue::text("s1")], // missing NOT NULL columns → fails
+            ),
+            Stmt::new(
+                "DELETE FROM daily_app WHERE activity_date = '1970-01-06'",
+                vec![],
+            ),
+        ];
         assert!(b.transaction(stmts).is_err());
         assert_eq!(count(&mut b, "batches"), 0, "batch insert rolled back");
         assert_eq!(count(&mut b, "segments"), 0, "segment insert rolled back");
@@ -844,10 +885,13 @@ mod tests {
         ];
         upload_batch(&mut b, "dev1", "b1", &segs, 100).unwrap();
         let day = portfolio_day(&mut b, "1970-01-06").unwrap();
-        assert_eq!(day, vec![
-            ("VS Code".to_string(), 2 * H, 2 * H),
-            ("Foot".to_string(), H, H),
-        ]);
+        assert_eq!(
+            day,
+            vec![
+                ("VS Code".to_string(), 2 * H, 2 * H),
+                ("Foot".to_string(), H, H),
+            ]
+        );
         let uniq = portfolio_unique(&mut b, "1970-01-01").unwrap();
         assert_eq!(uniq, vec![("1970-01-06".to_string(), 3 * H, 0)]);
     }
@@ -859,7 +903,7 @@ mod tests {
         // evening lands on different calendar days — both counted, no loss.
         let mut b = backend();
         let t = 5 * DAY + 20 * H; // 20:00 UTC on 1970-01-06
-        // Device A (UTC+5:30): local date 1970-01-07 01:30.
+                                  // Device A (UTC+5:30): local date 1970-01-07 01:30.
         let a = vec![seg("s1", "VS Code", t, t + H, "1970-01-07")];
         // Device B (UTC-5): local date 1970-01-06 15:00.
         let bb = vec![seg("s2", "VS Code", t, t + H, "1970-01-06")];
@@ -883,12 +927,21 @@ mod tests {
         let segs = vec![
             seg("s1", "VS Code", base + 10 * H, base + 12 * H, "1970-01-06"),
             // Clock jumped back 30 min mid-session: overlapping rewrite.
-            seg("s2", "VS Code", base + 11 * H + 1800, base + 12 * H + H, "1970-01-06"),
+            seg(
+                "s2",
+                "VS Code",
+                base + 11 * H + 1800,
+                base + 12 * H + H,
+                "1970-01-06",
+            ),
         ];
         upload_batch(&mut b, "dev1", "b1", &segs, 100).unwrap();
         // Union of 10:00–12:00 and 11:30–13:00 = 10:00–13:00 = 3 h;
         // combined Σ = 2 h + 1.5 h = 3.5 h.
-        assert_eq!(daily_app(&mut b, "1970-01-06", "VS Code"), (3 * H + H / 2, 3 * H));
+        assert_eq!(
+            daily_app(&mut b, "1970-01-06", "VS Code"),
+            (3 * H + H / 2, 3 * H)
+        );
         assert_eq!(daily_unique(&mut b, "1970-01-06").0, 3 * H);
     }
 
@@ -913,7 +966,11 @@ mod tests {
         .unwrap();
         let segs2 = vec![seg("s2", "Foot", base + 2 * H, base + 3 * H, "1970-01-06")];
         upload_batch(&mut b, "dev1", "b2", &segs2, 200).unwrap();
-        assert_eq!(daily_app(&mut b, "1970-01-06", "VS Code"), (H, H), "repaired");
+        assert_eq!(
+            daily_app(&mut b, "1970-01-06", "VS Code"),
+            (H, H),
+            "repaired"
+        );
         assert_eq!(daily_app(&mut b, "1970-01-06", "Foot"), (H, H));
     }
 }

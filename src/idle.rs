@@ -44,8 +44,7 @@ impl IdleState {
             return;
         }
         if let (Some(manager), Some(seat)) = (&self.manager, &self.seat) {
-            self.notification =
-                Some(manager.get_idle_notification(self.timeout_ms, seat, qh, ()));
+            self.notification = Some(manager.get_idle_notification(self.timeout_ms, seat, qh, ()));
         }
     }
 }
@@ -59,7 +58,12 @@ impl Dispatch<WlRegistry, ()> for IdleState {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global { name, interface, version } = event {
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
             match interface.as_str() {
                 "ext_idle_notifier_v1" => {
                     state.manager = Some(registry.bind(name, version.min(2), qh, ()));

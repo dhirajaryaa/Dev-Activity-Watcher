@@ -92,11 +92,16 @@ pub fn query_active_window(dir: &Path) -> Result<Option<ActiveWindow>> {
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
                 // A complete JSON document at any size means we are done.
-                if buf.first() == Some(&b'{') && serde_json::from_slice::<serde::de::IgnoredAny>(&buf).is_ok() {
+                if buf.first() == Some(&b'{')
+                    && serde_json::from_slice::<serde::de::IgnoredAny>(&buf).is_ok()
+                {
                     break;
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
                 break; // socket went quiet: response is complete (or absent)
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -108,18 +113,29 @@ pub fn query_active_window(dir: &Path) -> Result<Option<ActiveWindow>> {
         return Ok(None); // "Invalid" or empty when nothing is focused
     }
     let value: serde_json::Value = serde_json::from_str(&text)?;
-    let class = value.get("class").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let class = value
+        .get("class")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if class.is_empty() {
         return Ok(None);
     }
-    let title = value.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let title = value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     Ok(Some(ActiveWindow { class, title }))
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HyprEvent {
     /// Active window changed. Empty class means "no focused window".
-    ActiveWindow { class: String, title: String },
+    ActiveWindow {
+        class: String,
+        title: String,
+    },
     Locked,
     Unlocked,
     Other,
@@ -173,7 +189,14 @@ pub async fn run_event_listener(tx: mpsc::Sender<Input>) {
                 let snapshot =
                     tokio::task::spawn_blocking(move || query_active_window(&dir_snapshot)).await;
                 if let Ok(Ok(Some(aw))) = snapshot {
-                    if tx.send(Input::Focus { class: aw.class, title: aw.title }).await.is_err() {
+                    if tx
+                        .send(Input::Focus {
+                            class: aw.class,
+                            title: aw.title,
+                        })
+                        .await
+                        .is_err()
+                    {
                         return; // daemon is shutting down
                     }
                 }
@@ -235,7 +258,13 @@ mod tests {
                 title: String::new()
             }
         );
-        assert_eq!(to_input(parse_event("activewindow>>")), Some(Input::Focus { class: String::new(), title: String::new() }));
+        assert_eq!(
+            to_input(parse_event("activewindow>>")),
+            Some(Input::Focus {
+                class: String::new(),
+                title: String::new()
+            })
+        );
     }
 
     #[test]
@@ -248,7 +277,10 @@ mod tests {
     #[test]
     fn ignores_other_events() {
         assert_eq!(parse_event("workspace>>2"), HyprEvent::Other);
-        assert_eq!(parse_event("openwindow>>addr,1,firefox,Title"), HyprEvent::Other);
+        assert_eq!(
+            parse_event("openwindow>>addr,1,firefox,Title"),
+            HyprEvent::Other
+        );
         assert_eq!(to_input(parse_event("workspace>>2")), None);
     }
 }

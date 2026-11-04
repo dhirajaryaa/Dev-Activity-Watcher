@@ -151,7 +151,11 @@ impl Classifier {
                 .iter()
                 .map(|(k, v)| (normalize(k), v.clone()))
                 .collect(),
-            excluded: tracking.excluded_apps.iter().map(|s| normalize(s)).collect(),
+            excluded: tracking
+                .excluded_apps
+                .iter()
+                .map(|s| normalize(s))
+                .collect(),
             tracked_categories: tracking
                 .tracked_categories
                 .iter()
@@ -196,7 +200,8 @@ impl Classifier {
             })
             .or_else(|| brave_pwa_display_name(&norm))
             .unwrap_or_else(|| class.trim().to_string());
-        let category = if norm.starts_with("jetbrains-") || EDITOR_CLASSES.contains(&norm.as_str()) {
+        let category = if norm.starts_with("jetbrains-") || EDITOR_CLASSES.contains(&norm.as_str())
+        {
             Category::Editor
         // Brave PWA windows ("brave-<origin>__-Default", e.g. a ChatGPT web
         // app installed as a browser app) are browser windows too.
@@ -414,7 +419,8 @@ mod tests {
     fn editor_project_appended_only_when_enabled() {
         let c = classifier_with(&[], &[]);
         assert_eq!(
-            c.classify_window("code", "main.rs - atw - Visual Studio Code").display_name,
+            c.classify_window("code", "main.rs - atw - Visual Studio Code")
+                .display_name,
             "Visual Studio Code"
         );
         let tracking = Tracking {
@@ -423,12 +429,14 @@ mod tests {
         };
         let c = Classifier::from_config(&tracking);
         assert_eq!(
-            c.classify_window("code", "main.rs - atw - Visual Studio Code").display_name,
+            c.classify_window("code", "main.rs - atw - Visual Studio Code")
+                .display_name,
             "Visual Studio Code · atw"
         );
         // Non-editor windows are never suffixed.
         assert_eq!(
-            c.classify_window("firefox", "Example page - Mozilla Firefox").display_name,
+            c.classify_window("firefox", "Example page - Mozilla Firefox")
+                .display_name,
             "Firefox"
         );
     }

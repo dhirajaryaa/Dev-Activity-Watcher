@@ -35,7 +35,10 @@ pub fn merge_intervals(mut intervals: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
 
 /// Total covered seconds of a (not necessarily disjoint) interval list.
 pub fn union_seconds(intervals: &[(i64, i64)]) -> i64 {
-    merge_intervals(intervals.to_vec()).iter().map(|(s, e)| e - s).sum()
+    merge_intervals(intervals.to_vec())
+        .iter()
+        .map(|(s, e)| e - s)
+        .sum()
 }
 
 /// Attribution outcome for one reporting day.
@@ -137,7 +140,10 @@ mod tests {
         assert_eq!(d.per_app[0].1, 23 * H, "combined Σ may exceed a day");
         assert_eq!(d.per_app[0].2, 10 * H, "merged union is the honest total");
         assert_eq!(d.unique_active_seconds, 10 * H);
-        assert_eq!(d.overlap_seconds, 0, "same app everywhere: no cross-app overlap");
+        assert_eq!(
+            d.overlap_seconds, 0,
+            "same app everywhere: no cross-app overlap"
+        );
     }
 
     #[test]
@@ -167,7 +173,7 @@ mod tests {
         let base = vec![app("VS Code", 0, 4 * H), app("Foot", 5 * H, 6 * H)];
         let late = {
             let mut v = base.clone();
-            v.push(app("VS Code", 1 * H, 2 * H));
+            v.push(app("VS Code", H, 2 * H));
             v
         };
         let a = merge_day(&base);

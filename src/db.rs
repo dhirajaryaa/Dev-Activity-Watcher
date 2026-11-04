@@ -36,7 +36,9 @@ impl Db {
             Err(err) => {
                 let reason = match &err {
                     AtwError::Corrupt(msg) => msg.clone(),
-                    AtwError::Db(rusqlite::Error::SqliteFailure(_, Some(msg))) if is_corruption(msg) => {
+                    AtwError::Db(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                        if is_corruption(msg) =>
+                    {
                         msg.clone()
                     }
                     _ => return Err(err),
@@ -421,9 +423,7 @@ fn migrate(conn: &Connection, from: i32) -> Result<()> {
         // Backfill UUIDs for rows created before this migration. SQLite has
         // no UUID function, so this happens here in Rust, row by row.
         let ids: Vec<i64> = {
-            let mut stmt = conn.prepare(
-                "SELECT id FROM activity WHERE segment_uuid IS NULL",
-            )?;
+            let mut stmt = conn.prepare("SELECT id FROM activity WHERE segment_uuid IS NULL")?;
             let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
@@ -504,7 +504,8 @@ mod tests {
     struct TempDir(std::path::PathBuf);
     impl TempDir {
         fn new(label: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("atw-test-{}-{}", std::process::id(), label));
+            let path =
+                std::env::temp_dir().join(format!("atw-test-{}-{}", std::process::id(), label));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).unwrap();
             TempDir(path)
@@ -523,7 +524,9 @@ mod tests {
         drop(Db::open(&path).unwrap());
         drop(Db::open(&path).unwrap()); // second open must not fail on version
         let conn = Connection::open(&path).unwrap();
-        let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }
 
@@ -532,18 +535,27 @@ mod tests {
         let dir = TempDir::new("midnight");
         let mut db = Db::open(&dir.0.join("activity.db")).unwrap();
         let segments = vec![
-            seg("code", "Visual Studio Code", day5(23, 30, 0), 6 * DAY + 1800),
+            seg(
+                "code",
+                "Visual Studio Code",
+                day5(23, 30, 0),
+                6 * DAY + 1800,
+            ),
             seg("firefox", "Firefox", day5(9, 0, 0), day5(10, 0, 0)),
         ];
         let mut open_row = None;
-        db.flush(None, &mut open_row, &[], &segments, 0, &utc_date).unwrap();
+        db.flush(None, &mut open_row, &[], &segments, 0, &utc_date)
+            .unwrap();
         assert_eq!(open_row, None);
 
         let day5_totals = db.today_totals("1970-01-06").unwrap();
         // Jan 6 holds the full Firefox hour plus the pre-midnight half hour of VS Code.
         assert_eq!(
             day5_totals,
-            vec![("Firefox".to_string(), 3600), ("Visual Studio Code".to_string(), 1800)]
+            vec![
+                ("Firefox".to_string(), 3600),
+                ("Visual Studio Code".to_string(), 1800)
+            ]
         );
         let day6_totals = db.today_totals("1970-01-07").unwrap();
         assert_eq!(day6_totals, vec![("Visual Studio Code".to_string(), 1800)]);
@@ -556,16 +568,33 @@ mod tests {
         let live = seg("code", "Visual Studio Code", day5(9, 0, 0), 0);
 
         let mut open_row = None;
-        db.flush(Some(&live), &mut open_row, &[], &[], day5(9, 5, 0), &utc_date).unwrap();
+        db.flush(
+            Some(&live),
+            &mut open_row,
+            &[],
+            &[],
+            day5(9, 5, 0),
+            &utc_date,
+        )
+        .unwrap();
         let first = open_row.unwrap();
-        db.flush(Some(&live), &mut open_row, &[], &[], day5(9, 10, 0), &utc_date).unwrap();
+        db.flush(
+            Some(&live),
+            &mut open_row,
+            &[],
+            &[],
+            day5(9, 10, 0),
+            &utc_date,
+        )
+        .unwrap();
         assert_eq!(open_row.unwrap().0, first.0); // same row, no duplicates
 
         // App switch finalizes the row at its real end time: the row is
         // rewritten with the full 20-minute segment.
         let full = seg("code", "Visual Studio Code", day5(9, 0, 0), day5(9, 20, 0));
         let finalize = vec![(first.0, full, 900)];
-        db.flush(None, &mut open_row, &finalize, &[], 0, &utc_date).unwrap();
+        db.flush(None, &mut open_row, &finalize, &[], 0, &utc_date)
+            .unwrap();
         assert_eq!(open_row, None);
 
         let conn_count: i64 = db
@@ -586,11 +615,20 @@ mod tests {
         let mut db = Db::open(&dir.0.join("activity.db")).unwrap();
         let live = seg("code", "Visual Studio Code", day5(9, 0, 0), 0);
         let mut open_row = None;
-        db.flush(Some(&live), &mut open_row, &[], &[], day5(9, 2, 0), &utc_date).unwrap();
+        db.flush(
+            Some(&live),
+            &mut open_row,
+            &[],
+            &[],
+            day5(9, 2, 0),
+            &utc_date,
+        )
+        .unwrap();
         let row = open_row.unwrap().0;
         // A truly zero-duration segment (e.g. idle fired right after focus).
         let empty = seg("code", "Visual Studio Code", day5(9, 0, 0), day5(9, 0, 0));
-        db.flush(None, &mut open_row, &[(row, empty, 0)], &[], 0, &utc_date).unwrap();
+        db.flush(None, &mut open_row, &[(row, empty, 0)], &[], 0, &utc_date)
+            .unwrap();
         let count: i64 = db
             .conn
             .query_row("SELECT COUNT(*) FROM activity", [], |r| r.get(0))
@@ -603,12 +641,13 @@ mod tests {
         let dir = TempDir::new("retention");
         let mut db = Db::open(&dir.0.join("activity.db")).unwrap();
         let pending = vec![
-            seg("old1", "Old1", 1 * DAY, 1 * DAY + 100),  // 1970-01-02
-            seg("old2", "Old2", 2 * DAY, 2 * DAY + 100),  // 1970-01-03
+            seg("old1", "Old1", DAY, DAY + 100),              // 1970-01-02
+            seg("old2", "Old2", 2 * DAY, 2 * DAY + 100),      // 1970-01-03
             seg("new", "New", day5(9, 0, 0), day5(9, 30, 0)), // 1970-01-06
         ];
         let mut open_row = None;
-        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date).unwrap();
+        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date)
+            .unwrap();
 
         let deleted = db.retain("1970-01-04", false).unwrap();
         assert_eq!(deleted, 2);
@@ -643,7 +682,9 @@ mod tests {
         }
         drop(Db::open(&path).unwrap());
         let conn = Connection::open(&path).unwrap();
-        let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(version, 2);
         let (uuid, is_null): (String, i64) = conn
             .query_row(
@@ -660,13 +701,20 @@ mod tests {
     fn sync_roundtrip_marks_and_excludes() {
         let dir = TempDir::new("syncq");
         let mut db = Db::open(&dir.0.join("activity.db")).unwrap();
-        let pending = vec![
+        let pending = [
             seg("code", "VS Code", day5(9, 0, 0), day5(9, 30, 0)),
             seg("foot", "Foot", day5(10, 0, 0), day5(10, 15, 0)),
         ];
         let mut open_row = None;
-        db.flush(Some(&pending[0].clone()), &mut open_row, &[], &pending[1..], day5(10, 20, 0), &utc_date)
-            .unwrap();
+        db.flush(
+            Some(&pending[0].clone()),
+            &mut open_row,
+            &[],
+            &pending[1..],
+            day5(10, 20, 0),
+            &utc_date,
+        )
+        .unwrap();
         let open_id = open_row.unwrap().0;
 
         // The open row is excluded from sync candidates.
@@ -676,7 +724,8 @@ mod tests {
         assert!(!rows[0].segment_uuid.is_empty());
 
         // With no open row, both rows are candidates, oldest first.
-        db.flush(None, &mut open_row, &[], &[], 0, &utc_date).unwrap();
+        db.flush(None, &mut open_row, &[], &[], 0, &utc_date)
+            .unwrap();
         let rows = db.unsynced_rows(-1, 500).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows[0].started_at <= rows[1].started_at);
@@ -702,7 +751,8 @@ mod tests {
             .map(|i| seg("code", "VS Code", day5(9 + i, 0, 0), day5(9 + i, 0, 30)))
             .collect();
         let mut open_row = None;
-        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date).unwrap();
+        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date)
+            .unwrap();
         let rows = db.unsynced_rows(-1, 3).unwrap();
         assert_eq!(rows.len(), 3);
     }
@@ -712,14 +762,20 @@ mod tests {
         let dir = TempDir::new("retsync");
         let mut db = Db::open(&dir.0.join("activity.db")).unwrap();
         let pending = vec![
-            seg("old1", "Old1", 1 * DAY, 1 * DAY + 100), // 1970-01-02
+            seg("old1", "Old1", DAY, DAY + 100),         // 1970-01-02
             seg("old2", "Old2", 2 * DAY, 2 * DAY + 100), // 1970-01-03
             seg("new", "New", day5(9, 0, 0), day5(9, 30, 0)),
         ];
         let mut open_row = None;
-        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date).unwrap();
+        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date)
+            .unwrap();
         // Ack only the first old row so it becomes deletable.
-        let ids: Vec<i64> = db.unsynced_rows(-1, 500).unwrap().iter().map(|r| r.id).collect();
+        let ids: Vec<i64> = db
+            .unsynced_rows(-1, 500)
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
         db.mark_synced(&ids[..1], "b", 5).unwrap();
 
         // With sync: the acked old row goes; the un-acked old row survives.
@@ -741,8 +797,14 @@ mod tests {
         let mut db = Db::open(&path).unwrap();
         // Fresh database works.
         let mut open_row = None;
-        let pending = vec![seg("code", "Visual Studio Code", day5(9, 0, 0), day5(9, 5, 0))];
-        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date).unwrap();
+        let pending = vec![seg(
+            "code",
+            "Visual Studio Code",
+            day5(9, 0, 0),
+            day5(9, 5, 0),
+        )];
+        db.flush(None, &mut open_row, &[], &pending, 0, &utc_date)
+            .unwrap();
         assert_eq!(db.today_totals("1970-01-06").unwrap().len(), 1);
         // Quarantine copy still exists for inspection.
         let quarantine: Vec<_> = std::fs::read_dir(&dir.0)
@@ -760,10 +822,13 @@ mod tests {
         let long = seg("code", "Visual Studio Code", day5(22, 0, 0), 6 * DAY + 600);
         let pieces = split_by_date(&long, &utc_date);
         let mut open_row = None;
-        db.flush(None, &mut open_row, &[], &pieces, 0, &utc_date).unwrap();
+        db.flush(None, &mut open_row, &[], &pieces, 0, &utc_date)
+            .unwrap();
         let sum: i64 = db
             .conn
-            .query_row("SELECT SUM(duration_seconds) FROM activity", [], |r| r.get(0))
+            .query_row("SELECT SUM(duration_seconds) FROM activity", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(sum, long.duration());
     }

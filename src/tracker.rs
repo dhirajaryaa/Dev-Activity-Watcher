@@ -642,13 +642,25 @@ mod tests {
             class: class.to_string(),
             title: title.to_string(),
         };
-        t.handle(focus_title("code", "main.rs - atw - Visual Studio Code"), day5(9, 0, 0));
-        assert_eq!(t.current.as_ref().unwrap().display_name, "Visual Studio Code · atw");
+        t.handle(
+            focus_title("code", "main.rs - atw - Visual Studio Code"),
+            day5(9, 0, 0),
+        );
+        assert_eq!(
+            t.current.as_ref().unwrap().display_name,
+            "Visual Studio Code · atw"
+        );
         // Switching projects within the same editor cuts the segment.
-        t.handle(focus_title("code", "notes.md - diary - Visual Studio Code"), day5(9, 5, 0));
+        t.handle(
+            focus_title("code", "notes.md - diary - Visual Studio Code"),
+            day5(9, 5, 0),
+        );
         assert_eq!(t.pending[0].display_name, "Visual Studio Code · atw");
         assert_eq!(t.pending[0].duration(), 300);
-        assert_eq!(t.current.as_ref().unwrap().display_name, "Visual Studio Code · diary");
+        assert_eq!(
+            t.current.as_ref().unwrap().display_name,
+            "Visual Studio Code · diary"
+        );
     }
 
     #[test]
@@ -661,7 +673,10 @@ mod tests {
             },
             day5(9, 0, 0),
         );
-        assert_eq!(t.current.as_ref().unwrap().display_name, "Visual Studio Code");
+        assert_eq!(
+            t.current.as_ref().unwrap().display_name,
+            "Visual Studio Code"
+        );
     }
 
     #[test]

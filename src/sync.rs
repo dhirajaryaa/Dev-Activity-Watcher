@@ -166,7 +166,7 @@ fn batch_id_for(device_id: &str, segment_ids: &[String]) -> String {
 
 /// Exponential backoff after `failures` consecutive failures.
 pub fn backoff_seconds(failures: u32) -> u64 {
-    let shift = failures.min(5) as u32;
+    let shift = failures.min(5);
     (BACKOFF_BASE_SECONDS.saturating_mul(1 << shift)).min(BACKOFF_CAP_SECONDS)
 }
 
@@ -389,10 +389,7 @@ pub fn check_connection(config: &Config) -> Result<String> {
         .map(|sql| cloud::Stmt::new(*sql, vec![]))
         .collect();
     backend.transaction(ddl)?;
-    let rows = backend.query(
-        "SELECT COUNT(*) FROM segments",
-        vec![],
-    )?;
+    let rows = backend.query("SELECT COUNT(*) FROM segments", vec![])?;
     let count = match rows.first().and_then(|r| r.first()) {
         Some(cloud::CloudValue::Int(n)) => *n,
         Some(cloud::CloudValue::Text(s)) => s.parse::<i64>().unwrap_or(0),
@@ -423,11 +420,8 @@ mod tests {
     const DAY: i64 = 86_400;
 
     fn tmpdir(label: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "atw-sync-test-{}-{}",
-            std::process::id(),
-            label
-        ));
+        let path =
+            std::env::temp_dir().join(format!("atw-sync-test-{}-{}", std::process::id(), label));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
@@ -470,8 +464,10 @@ mod tests {
 
     #[test]
     fn token_resolution_prefers_command() {
-        let mut cfg = SyncConfig::default();
-        cfg.token = "literal-token".into();
+        let mut cfg = SyncConfig {
+            token: "literal-token".into(),
+            ..Default::default()
+        };
         assert_eq!(resolve_token(&cfg).unwrap(), "literal-token");
         cfg.token_cmd = "printf 'from-keyring\\n'".into();
         assert_eq!(resolve_token(&cfg).unwrap(), "from-keyring");
@@ -507,7 +503,15 @@ mod tests {
             ended_at: 5 * DAY + H,
         }];
         let mut open_row = None;
-        db.flush(None, &mut open_row, &[], &segs, 0, &crate::local_date_string).unwrap();
+        db.flush(
+            None,
+            &mut open_row,
+            &[],
+            &segs,
+            0,
+            &crate::local_date_string,
+        )
+        .unwrap();
         assert_eq!(db.pending_count(-1).unwrap(), 1);
 
         // Offline: nothing is marked, the row stays pending.
@@ -537,7 +541,15 @@ mod tests {
             ended_at: 5 * DAY + H,
         }];
         let mut open_row = None;
-        db.flush(None, &mut open_row, &[], &segs, 0, &crate::local_date_string).unwrap();
+        db.flush(
+            None,
+            &mut open_row,
+            &[],
+            &segs,
+            0,
+            &crate::local_date_string,
+        )
+        .unwrap();
 
         let mut cloud_backend = LocalBackend::open_in_memory().unwrap();
         cloud_backend.init_schema().unwrap();
@@ -604,6 +616,9 @@ mod tests {
     #[test]
     fn retention_cutoff_is_ninety_days_back() {
         let now = 200 * DAY;
-        assert_eq!(retention_cutoff(90, now), crate::local_date_string(110 * DAY));
+        assert_eq!(
+            retention_cutoff(90, now),
+            crate::local_date_string(110 * DAY)
+        );
     }
 }
