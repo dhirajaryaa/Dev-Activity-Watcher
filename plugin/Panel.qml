@@ -43,6 +43,7 @@ Panel {
   // ---- Cloud sync ----
   readonly property var syncInfo: status && status.sync ? status.sync : null
   readonly property bool syncConfigured: syncInfo ? syncInfo.configured === true : false
+  readonly property string savedUrl: syncInfo && syncInfo.url ? String(syncInfo.url) : ""
   // Optimistic local value so the switch throws immediately; the daemon's
   // refreshed status takes over when the panel is reopened.
   property var syncOnOverride: null
@@ -52,8 +53,24 @@ Panel {
   property string urlInput: ""
   property string tokenInput: ""
   property string connectError: ""
+  property string noteText: ""
   property bool connecting: false
   property bool syncingNow: false
+  // Configured users can reopen the form to change URL/token ("Change").
+  property bool editingCloud: false
+  readonly property bool showCloudForm: syncOn && (!syncConfigured || editingCloud)
+
+  // Never reopen into a half-finished edit or a stale success note.
+  onOpenedChanged: {
+    if (opened) {
+      syncOnOverride = null
+      editingCloud = false
+      connectError = ""
+      noteText = ""
+      urlInput = ""
+      tokenInput = ""
+    }
+  }
 
   readonly property string atwBin: Quickshell.env("HOME") + "/.local/bin/atw"
 
@@ -116,13 +133,45 @@ Panel {
     return pending > 0 ? pending + " pending" : "Not synced yet"
   }
 
+  function databaseLabel() {
+    // The scheme adds no information here; the host is what identifies the
+    // database. Wrapped to two lines by the label so it stays fully visible.
+    return root.savedUrl.replace(/^[a-z]+:\/\//, "")
+  }
+
+  function openCloudEditor() {
+    urlInput = root.savedUrl
+    tokenInput = ""
+    connectError = ""
+    noteText = ""
+    editingCloud = true
+  }
+
+  function cancelCloudEditor() {
+    editingCloud = false
+    urlInput = ""
+    tokenInput = ""
+    connectError = ""
+    noteText = ""
+  }
+
   function connect() {
-    if (urlInput.trim() === "" || tokenInput === "") {
-      connectError = "Paste both the URL and the token"
+    var url = urlInput.trim()
+    if (url === "") {
+      connectError = "Paste the database URL"
+      return
+    }
+    // The token is only required the first time; when changing an existing
+    // setup an empty field means "keep the saved token".
+    if (!syncConfigured && tokenInput === "") {
+      connectError = "Paste the database token"
       return
     }
     connectError = ""
+    noteText = ""
     connecting = true
+    // Saving the config is the goal; the connection check afterwards only
+    // reports whether the values work.
     saveUrl.running = true
   }
 
@@ -136,7 +185,9 @@ Panel {
         root.connectError = "Could not save the database URL"
         return
       }
-      saveToken.running = true
+      // A blank token means "keep the existing one" when editing.
+      if (root.tokenInput !== "") saveToken.running = true
+      else checkConnection.running = true
     }
   }
 
@@ -145,8 +196,9 @@ Panel {
     stdinEnabled: true
     command: [root.atwBin, "config", "set", "sync.token", "-"]
     onStarted: {
+      // Piped on stdin so the token never appears in the process list.
+      // Kept in the field until the connection check succeeds.
       write(root.tokenInput + "\n")
-      root.tokenInput = ""
     }
     onExited: function(code) {
       if (code !== 0) {
@@ -154,9 +206,24 @@ Panel {
         root.connectError = "Could not save the token"
         return
       }
-      root.connecting = false
-      root.connectError = ""
-      // Connecting implies "on", then restart the daemon to apply.
+      checkConnection.running = true
+    }
+  }
+
+  Process {
+    id: checkConnection
+    command: [root.atwBin, "sync", "--check"]
+    onExited: function(code) {
+      if (code === 0) {
+        root.noteText = "Saved & connected"
+        root.connectError = ""
+        root.tokenInput = ""
+        root.editingCloud = false
+      } else {
+        // The config is saved either way; only the values failed.
+        root.noteText = "Saved"
+        root.connectError = "Saved, but the connection failed — check the URL and token"
+      }
       root.syncOnOverride = true
       setEnabled.running = true
     }
@@ -168,6 +235,7 @@ Panel {
     onExited: function(code) {
       if (code !== 0) {
         root.syncOnOverride = null
+        root.connecting = false
         root.connectError = "Could not save the sync setting"
         return
       }
@@ -179,6 +247,10 @@ Panel {
     id: restartDaemon
     command: ["systemctl", "--user", "restart", "atwd"]
     onExited: function(code) {
+      root.connecting = false
+      // Only leave the form after a successful connection; on failure keep
+      // the values visible so they can be corrected and saved again.
+      if (root.connectError === "") root.editingCloud = false
       if (root.hostWidget) root.hostWidget.refresh()
     }
   }
@@ -287,7 +359,8 @@ Panel {
           }
 
           // ---- Today / History section header. History is opt-in: the
-          //      default view is today only.
+          //      default view is today only, and the button is a real
+          //      bordered control so it reads as an action.
           Item {
             width: parent.width
             height: Math.max(sectionHeader.implicitHeight, viewToggle.implicitHeight)
@@ -296,7 +369,7 @@ Panel {
               id: sectionHeader
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
-              text: root.historyMode ? "History" : "Today"
+              text: root.historyMode ? "Last 7 days" : "Today"
               fontSize: Style.font.body
               foreground: root.muted
             }
@@ -307,10 +380,9 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               text: root.historyMode ? "Today" : "History"
               fontSize: Style.font.body
-              foreground: root.muted
+              foreground: root.foreground
               accent: root.accent
-              bordered: false
-              verticalPadding: Style.space(2)
+              bordered: true
               onClicked: root.historyMode = !root.historyMode
             }
           }
@@ -480,40 +552,6 @@ Panel {
                 }
               }
             }
-
-            Item {
-              width: parent.width
-              height: Math.max(formatLabel.implicitHeight, formatValue.implicitHeight)
-
-              Text {
-                id: formatLabel
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Bar format"
-                color: root.foreground
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.body
-              }
-
-              Text {
-                id: formatValue
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.hostWidget ? root.hostWidget.barFormat : "Icon + hours"
-                color: root.muted
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.body
-              }
-            }
-
-            Text {
-              width: parent.width
-              text: "Right-click the bar icon to change the format."
-              color: root.muted
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-              wrapMode: Text.WordWrap
-            }
           }
 
           // ---- Cloud sync: toggle + first-time paste-in setup
@@ -548,11 +586,46 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            // First time: paste the database URL + token here.
-            TextField {
-              visible: root.syncOn && !root.syncConfigured
+            // Configured summary: what is saved, plus a way to change it.
+            Item {
+              visible: root.syncConfigured && !root.showCloudForm
               width: parent.width
-              placeholderText: "Database URL (https://…turso.io)"
+              height: Math.max(dbLabel.implicitHeight, changeButton.implicitHeight)
+
+              Text {
+                id: dbLabel
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - changeButton.implicitWidth - Style.space(8)
+                text: root.databaseLabel() !== "" ? root.databaseLabel() : "Database configured"
+                color: root.muted
+                font.family: root.contentFontFamily
+                font.pixelSize: Math.max(10, Style.font.body - 1)
+                wrapMode: Text.WrapAnywhere
+                maximumLineCount: 2
+                elide: Text.ElideRight
+              }
+
+              Button {
+                id: changeButton
+                anchors.right: parent.right
+                anchors.top: parent.top
+                text: "Change"
+                foreground: root.foreground
+                accent: root.accent
+                bordered: true
+                fontSize: Math.max(10, Style.font.body - 1)
+                horizontalPadding: Style.space(6)
+                verticalPadding: Style.space(2)
+                onClicked: root.openCloudEditor()
+              }
+            }
+
+            // First time / edit: paste the database URL + token here.
+            TextField {
+              visible: root.showCloudForm
+              width: parent.width
+              placeholderText: "Database URL (libsql://… or https://…)"
               text: root.urlInput
               onTextChanged: root.urlInput = text
               foreground: root.foreground
@@ -561,10 +634,12 @@ Panel {
             }
 
             TextField {
-              visible: root.syncOn && !root.syncConfigured
+              visible: root.showCloudForm
               width: parent.width
               password: true
-              placeholderText: "Database token"
+              placeholderText: root.syncConfigured
+                ? "New token (leave blank to keep)"
+                : "Database token"
               text: root.tokenInput
               onTextChanged: root.tokenInput = text
               foreground: root.foreground
@@ -572,20 +647,42 @@ Panel {
               font.pixelSize: Style.font.body
             }
 
-            Button {
-              visible: root.syncOn && !root.syncConfigured
-              text: root.connecting ? "Connecting…" : "Connect"
-              enabled: !root.connecting
-              foreground: root.foreground
-              accent: root.accent
-              bordered: true
-              fontSize: Style.font.body
-              onClicked: root.connect()
+            Item {
+              visible: root.showCloudForm
+              width: parent.width
+              height: Math.max(saveButton.implicitHeight, cancelButton.implicitHeight)
+
+              Button {
+                id: saveButton
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.connecting ? "Saving…" : "Save"
+                enabled: !root.connecting
+                foreground: root.foreground
+                accent: root.accent
+                bordered: true
+                fontSize: Style.font.body
+                onClicked: root.connect()
+              }
+
+              Button {
+                id: cancelButton
+                anchors.left: saveButton.right
+                anchors.leftMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.syncConfigured
+                text: "Cancel"
+                foreground: root.muted
+                accent: root.accent
+                bordered: false
+                fontSize: Style.font.body
+                onClicked: root.cancelCloudEditor()
+              }
             }
 
             // Configured: last-sync line + manual sync.
             Item {
-              visible: root.syncConfigured && root.syncOn
+              visible: root.syncConfigured && root.syncOn && !root.showCloudForm
               width: parent.width
               height: Math.max(syncLineText.implicitHeight, syncNowButton.implicitHeight)
 
@@ -597,7 +694,7 @@ Panel {
                 text: root.syncLine()
                 color: root.muted
                 font.family: root.contentFontFamily
-                font.pixelSize: Style.font.body
+                font.pixelSize: Math.max(10, Style.font.body - 1)
                 elide: Text.ElideRight
               }
 
@@ -610,7 +707,9 @@ Panel {
                 foreground: root.foreground
                 accent: root.accent
                 bordered: true
-                fontSize: Style.font.body
+                fontSize: Math.max(10, Style.font.body - 1)
+                horizontalPadding: Style.space(6)
+                verticalPadding: Style.space(2)
                 onClicked: {
                   root.syncingNow = true
                   syncNow.running = true
@@ -629,33 +728,27 @@ Panel {
             }
 
             Text {
+              visible: root.noteText !== ""
               width: parent.width
-              text: root.syncOn
-                ? (root.syncConfigured
-                    ? "Your own database — only app names and durations are uploaded."
-                    : "Syncs every 10 minutes. Only app names and durations are uploaded.")
-                : "Off — everything stays on this machine."
-              color: root.muted
+              text: root.noteText
+              color: root.accent
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
               wrapMode: Text.WordWrap
             }
-          }
 
-          // ---- Privacy facts
-          PanelSectionHeader {
-            text: "Privacy"
-            fontSize: Style.font.body
-            foreground: root.muted
-          }
-
-          Text {
-            width: parent.width
-            text: "App names and durations only — never window titles or paths. 7 days local, 90 days in the cloud."
-            color: root.muted
-            font.family: root.contentFontFamily
-            font.pixelSize: Style.font.body
-            wrapMode: Text.WordWrap
+            Text {
+              width: parent.width
+              text: root.syncOn
+                ? (root.syncConfigured
+                    ? "Apps and durations only — never titles or paths."
+                    : "App names and durations only — never titles or paths.")
+                : "Off — everything stays on this machine."
+              color: root.muted
+              font.family: root.contentFontFamily
+              font.pixelSize: Math.max(10, Style.font.body - 1)
+              wrapMode: Text.WordWrap
+            }
           }
         }
       }

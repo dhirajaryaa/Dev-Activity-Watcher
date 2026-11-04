@@ -31,7 +31,7 @@ use clap::{Parser, Subcommand};
 
 use crate::classify::Classifier;
 use crate::db::Db;
-use crate::status::{Status, STATUS_VERSION, write_status_file};
+use crate::status::{write_status_file, Status, STATUS_VERSION};
 use crate::tracker::{Input, Tracker};
 
 #[derive(Debug, thiserror::Error)]
@@ -146,7 +146,9 @@ where
             Command::Cleanup => run_cleanup(cli.config.as_deref()),
             Command::Sync { check } => run_sync_cli(cli.config.as_deref(), check),
             Command::Config { action } => match action {
-                ConfigAction::Set { key, value } => set_config_cli(cli.config.as_deref(), &key, &value),
+                ConfigAction::Set { key, value } => {
+                    set_config_cli(cli.config.as_deref(), &key, &value)
+                }
             },
         }
     });
@@ -187,6 +189,7 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
     let mut sync_status = status::SyncStatus {
         enabled: config.sync.enabled,
         configured: config.sync.is_configured(),
+        url: Some(config.sync.url.clone()).filter(|u| !u.trim().is_empty()),
         last_sync: sync::read_record(&dirs.state).last_sync,
         pending: 0,
         last_error: sync::read_record(&dirs.state).last_error,
@@ -195,23 +198,37 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
     // Retention on startup: covers machines that were off for a while.
     let cutoff = config::retention_cutoff_date(config.tracking.retention_days);
     match db.retain(&cutoff, sync_active) {
-        Ok(n) if n > 0 => tracing::info!(target: "atw", deleted = n, cutoff = %cutoff, "retention cleanup"),
+        Ok(n) if n > 0 => {
+            tracing::info!(target: "atw", deleted = n, cutoff = %cutoff, "retention cleanup")
+        }
         Ok(_) => {}
         Err(e) => tracing::warn!(target: "atw", error = %e, "retention cleanup failed"),
     }
 
     let classifier = Classifier::from_config(&config.tracking);
     let date_of: tracker::DateFn = Box::new(local_date_string);
-    let mut tracker = Tracker::new(classifier, config.tracking.idle_timeout_seconds as i64, date_of);
+    let mut tracker = Tracker::new(
+        classifier,
+        config.tracking.idle_timeout_seconds as i64,
+        date_of,
+    );
 
     // Seed the tracker with the currently focused window, if any.
     match hypr::hypr_dir() {
         Some(dir) => match hypr::query_active_window(&dir) {
-            Ok(Some(aw)) => tracker.handle(Input::Focus { class: aw.class, title: aw.title }, unix_now()),
+            Ok(Some(aw)) => tracker.handle(
+                Input::Focus {
+                    class: aw.class,
+                    title: aw.title,
+                },
+                unix_now(),
+            ),
             Ok(None) => {}
             Err(e) => tracing::warn!(target: "atw", error = %e, "initial window snapshot failed"),
         },
-        None => tracing::warn!(target: "atw", "no Hyprland instance found yet; event listener will keep retrying"),
+        None => {
+            tracing::warn!(target: "atw", "no Hyprland instance found yet; event listener will keep retrying")
+        }
     }
 
     // Write a status snapshot immediately so the UI has data before the
@@ -239,7 +256,8 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
     // Periodic flush of the open segment.
     {
         let tx = tx.clone();
-        let every = std::time::Duration::from_secs(config.tracking.flush_interval_seconds.max(5) as u64);
+        let every =
+            std::time::Duration::from_secs(config.tracking.flush_interval_seconds.max(5) as u64);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(every);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -263,8 +281,7 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
         let state_dir = dirs.state.clone();
         let open_row = open_row_shared.clone();
         tokio::spawn(async move {
-            let interval =
-                std::time::Duration::from_secs(config.sync.effective_interval() as u64);
+            let interval = std::time::Duration::from_secs(config.sync.effective_interval() as u64);
             // Give the first flush a moment to close rows before uploading.
             let mut delay = std::time::Duration::from_secs(30);
             let mut failures: u32 = 0;
@@ -347,10 +364,8 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
         let tx = tx.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(
-                    seconds_until_next_midnight(),
-                ))
-                .await;
+                tokio::time::sleep(std::time::Duration::from_secs(seconds_until_next_midnight()))
+                    .await;
                 if tx.send(Input::Retention).await.is_err() {
                     break;
                 }
@@ -389,10 +404,9 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
 
     while let Some(input) = rx.recv().await {
         let now = unix_now();
-        if let Some(suspend_start) = suspend_detector.observe(
-            now * 1000,
-            mono_start.elapsed().as_millis() as i64,
-        ) {
+        if let Some(suspend_start) =
+            suspend_detector.observe(now * 1000, mono_start.elapsed().as_millis() as i64)
+        {
             tracing::info!(target: "atw", at = suspend_start, "suspend/resume detected");
             tracker.handle(Input::Suspend, suspend_start);
             tracker.handle(Input::Resume, now);
@@ -401,13 +415,9 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
             Input::Sync => {
                 // Make freshly closed segments available, then ask the sync
                 // task to run right away (manual "Sync now").
-                if let Err(e) = flush_once(
-                    &mut db,
-                    &mut tracker,
-                    now,
-                    &open_row_path,
-                    &open_row_shared,
-                ) {
+                if let Err(e) =
+                    flush_once(&mut db, &mut tracker, now, &open_row_path, &open_row_shared)
+                {
                     tracing::error!(target: "atw", error = %e, "pre-sync flush failed");
                 }
                 let _ = sync_now_tx.try_send(());
@@ -426,13 +436,9 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
                 write_status(&db, &tracker, &status_path, now, &sync_status);
             }
             Input::Flush => {
-                if let Err(e) = flush_once(
-                    &mut db,
-                    &mut tracker,
-                    now,
-                    &open_row_path,
-                    &open_row_shared,
-                ) {
+                if let Err(e) =
+                    flush_once(&mut db, &mut tracker, now, &open_row_path, &open_row_shared)
+                {
                     tracing::error!(target: "atw", error = %e, "flush failed");
                 }
                 write_status(&db, &tracker, &status_path, now, &sync_status);
@@ -444,20 +450,18 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
                         tracing::info!(target: "atw", deleted = n, cutoff = %cutoff, "midnight retention")
                     }
                     Ok(_) => {}
-                    Err(e) => tracing::error!(target: "atw", error = %e, "midnight retention failed"),
+                    Err(e) => {
+                        tracing::error!(target: "atw", error = %e, "midnight retention failed")
+                    }
                 }
                 write_status(&db, &tracker, &status_path, now, &sync_status);
             }
             Input::Shutdown => {
                 // Ends the open segment, then flushes everything.
                 tracker.handle(input, now);
-                if let Err(e) = flush_once(
-                    &mut db,
-                    &mut tracker,
-                    now,
-                    &open_row_path,
-                    &open_row_shared,
-                ) {
+                if let Err(e) =
+                    flush_once(&mut db, &mut tracker, now, &open_row_path, &open_row_shared)
+                {
                     tracing::error!(target: "atw", error = %e, "final flush failed");
                 }
                 let _ = db.checkpoint();
@@ -486,7 +490,14 @@ fn flush_once(
     let mut open_row = tracker.open_row();
     let finalize = tracker.take_finalize();
     let pending = tracker.take_pending();
-    db.flush(open.as_ref(), &mut open_row, &finalize, &pending, now, &local_date_string)?;
+    db.flush(
+        open.as_ref(),
+        &mut open_row,
+        &finalize,
+        &pending,
+        now,
+        &local_date_string,
+    )?;
     tracker.set_open_row(open_row);
     // Persist the open row id: the background sync task reads the atomic,
     // and `atw sync` (which cannot see daemon memory) reads the file.
@@ -581,7 +592,9 @@ fn seconds_until_next_midnight() -> u64 {
     use chrono::TimeZone;
     let now = chrono::Local::now();
     let tomorrow = now.date_naive() + chrono::Duration::days(1);
-    let midnight = tomorrow.and_hms_opt(0, 0, 0).expect("00:00:00 is a valid time");
+    let midnight = tomorrow
+        .and_hms_opt(0, 0, 0)
+        .expect("00:00:00 is a valid time");
     match chrono::Local.from_local_datetime(&midnight).single() {
         Some(t) => (t - now).num_seconds().max(60) as u64,
         None => 3600, // DST edge: retry in an hour

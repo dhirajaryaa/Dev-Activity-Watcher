@@ -31,6 +31,9 @@ pub struct SyncStatus {
     pub enabled: bool,
     /// Whether a database URL + token are configured.
     pub configured: bool,
+    /// The configured database URL (not a secret; shown in the panel).
+    #[serde(default)]
+    pub url: Option<String>,
     /// RFC 3339 timestamp of the last successful sync, if any.
     pub last_sync: Option<String>,
     /// Rows waiting for upload right now.
@@ -110,6 +113,7 @@ mod tests {
             sync: SyncStatus {
                 enabled: true,
                 configured: false,
+                url: Some("https://demo-org.turso.io".to_string()),
                 last_sync: None,
                 pending: 0,
                 last_error: None,

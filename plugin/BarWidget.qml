@@ -4,16 +4,17 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Dev Activity Watcher — local-only developer app usage tracking.
+// Dev Activity Watcher — privacy-first developer app usage tracking.
 //
 // The bar shows today's total tracked time (dimmed while you are idle or
 // the screen is locked). Clicking opens a panel with today's per-app
-// breakdown and the weekly top apps. Only developer-relevant apps are
-// tracked: editors, AI agents, browsers, and terminals.
+// breakdown and an on-demand 7-day history. Only developer-relevant apps
+// are tracked: editors, AI agents, browsers, and terminals.
 //
 // Data flow: the atwd daemon writes ~/.local/state/atw/status.json after
 // every state change; this widget watches that file with Quickshell's
-// FileView (inotify-based) — no polling loop, no sockets, no network.
+// FileView (inotify-based) — no polling loop, no sockets, no direct network.
+// Cloud sync is optional and handled entirely by the daemon.
 BarWidget {
   id: root
   moduleName: "dhirajarya.atw"
@@ -76,6 +77,12 @@ BarWidget {
       ? "Icon + hours"
       : barFormat === "Icon + hours" ? "Icon + hours + minutes" : "Icon"
     setSetting("barFormat", next)
+  }
+
+  // Full duration for the panel: "1h 05m", "45m", "12s" (same as the
+  // minutes bar format; kept as a named function for the panel).
+  function formatDuration(seconds) {
+    return formatHoursMinutes(seconds)
   }
 
   // Hours only above an hour ("1h"); minutes below it ("45m") so the bar
