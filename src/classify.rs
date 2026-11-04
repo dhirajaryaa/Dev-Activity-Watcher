@@ -37,7 +37,12 @@ impl Category {
 pub const BUILTIN_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("code", "Visual Studio Code"),
     ("code-oss", "VS Code OSS"),
+    ("code-url-handler", "Visual Studio Code"),
+    // Flatpak/flatpak-style repackaged builds ship reverse-domain classes;
+    // electron's official Linux builds report this too.
+    ("com.microsoft.vscode", "Visual Studio Code"),
     ("codium", "VSCodium"),
+    ("com.vscodium.codium", "VSCodium"),
     ("jetbrains-idea", "IntelliJ IDEA"),
     ("zed", "Zed"),
     ("sublime_text", "Sublime Text"),
@@ -73,7 +78,10 @@ pub const BUILTIN_DISPLAY_NAMES: &[(&str, &str)] = &[
 const EDITOR_CLASSES: &[&str] = &[
     "code",
     "code-oss",
+    "code-url-handler",
+    "com.microsoft.vscode",
     "codium",
+    "com.vscodium.codium",
     "vscodium",
     "jetbrains-idea",
     "idea",
@@ -294,6 +302,19 @@ mod tests {
         let c = classifier_with(&[], &[]);
         assert_eq!(c.classify("Code").display_name, "Visual Studio Code");
         assert_eq!(c.classify("FIREFOX").display_name, "Firefox");
+    }
+
+    #[test]
+    fn flatpak_vscode_classes_are_tracked_editors() {
+        // Newer electron-based VS Code reports "com.microsoft.VSCode"; the
+        // Flatpak and VSCodium flatpak ship reverse-domain classes too.
+        let c = classifier_with(&[], &[]);
+        for class in ["com.microsoft.VSCode", "code-url-handler", "com.vscodium.Codium"] {
+            let info = c.classify(class);
+            assert_eq!(info.display_name, if class == "com.vscodium.Codium" { "VSCodium" } else { "Visual Studio Code" });
+            assert_eq!(info.category, Category::Editor);
+            assert!(info.tracked, "{class} must be recorded");
+        }
     }
 
     #[test]
