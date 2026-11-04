@@ -63,13 +63,25 @@ Sync then runs every 10 minutes (5/10/15/30 configurable) and retries with
 exponential backoff after failures; **Sync now** forces an attempt. The panel
 shows the last successful sync and how many segments are pending.
 
+**Sync is bidirectional.** Point your laptop and your PC at the same Turso
+database and they converge: each machine pushes its own segments, then pulls
+everything the others uploaded (walking a cheap ingest-log cursor, deduped by
+the global segment UUIDs, so nothing is ever double-imported). Code on the
+laptop in the morning, and the PC's bar and panel show the laptop's activity
+the next time it syncs — pull and push both happen on every cycle, with no
+uploading required for a pull to run. A pulled-in segment is born "synced"
+locally, so it is never re-uploaded, and normal retention ages it out.
+
 How the multi-device merge works, in one paragraph: every segment has a stable
 UUID and every upload batch a deterministic ID, so retries and two devices
 uploading at once are idempotent. Each batch lands in one transaction that
 recomputes the affected day's per-app totals from the **union of intervals** —
 overlapping time is never counted twice, and overlap between different apps is
 reported as a separate `(overlapping)` category. Device clocks are not
-corrected; segments are placed by their absolute timestamps.
+corrected; segments are placed by their absolute timestamps. The same union
+math powers the local views: bar and panel totals are the per-app union across
+all fetched devices, never a raw sum, while single-device installs see exactly
+the plain sum as before.
 
 ## Uninstall
 
@@ -116,7 +128,7 @@ Cloud (`[sync]`):
 ```bash
 atw status              # print the same JSON the panel reads
 atw cleanup             # force the retention pass now
-atw sync                # upload pending activity now
+atw sync                # push pending activity up, pull everyone else's down
 atw sync --check        # verify URL + token + schema, upload nothing
 atw config set sync.url https://…      # used by the panel
 atw config set sync.token -            # reads the token from stdin (no `ps` leak)

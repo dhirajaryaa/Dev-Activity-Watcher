@@ -183,97 +183,140 @@ impl Db {
         Ok(())
     }
 
-    /// Total seconds per display name for one local date, sorted by usage.
+    /// Honest per-app totals for one local date. Built from raw intervals
+    /// per app — the union of that app's intervals (merge oracle), never a
+    /// raw sum that would double-count time two devices spent together.
+    /// For a single device the segments are disjoint by construction, so
+    /// this equals the plain sum exactly.
     pub fn today_totals(&self, date: &str) -> Result<Vec<(String, u64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT display_name, SUM(duration_seconds)
-             FROM activity WHERE date = ?1
-             GROUP BY display_name ORDER BY 2 DESC",
+            "SELECT display_name, started_at, ended_at
+             FROM activity WHERE date = ?1",
         )?;
-        let rows = stmt.query_map(params![date], |row| {
-            let seconds: i64 = row.get(1)?;
-            Ok((row.get::<_, String>(0)?, seconds.max(0) as u64))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
-    }
-
-    /// Top applications by total seconds since `since_date` (inclusive),
-    /// sorted by usage, capped at 12 entries for the UI.
-    pub fn week_totals(&self, since_date: &str) -> Result<Vec<(String, u64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT display_name, SUM(duration_seconds)
-             FROM activity WHERE date >= ?1
-             GROUP BY display_name ORDER BY 2 DESC LIMIT 12",
-        )?;
-        let rows = stmt.query_map(params![since_date], |row| {
-            let seconds: i64 = row.get(1)?;
-            Ok((row.get::<_, String>(0)?, seconds.max(0) as u64))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
-    }
-
-    /// Per-day history since `since_date` (inclusive), newest day first,
-    /// for the panel's optional history view. `top` caps the per-day app list.
-    pub fn history(&self, since_date: &str, top: usize) -> Result<Vec<DayHistory>> {
-        let mut totals = std::collections::BTreeMap::<String, u64>::new();
-        {
-            let mut stmt = self.conn.prepare(
-                "SELECT date, SUM(duration_seconds)
-                 FROM activity WHERE date >= ?1 GROUP BY date",
-            )?;
-            let rows = stmt.query_map(params![since_date], |row| {
-                let seconds: i64 = row.get(1)?;
-                Ok((row.get::<_, String>(0)?, seconds.max(0) as u64))
-            })?;
-            for row in rows {
-                let (d, s) = row?;
-                totals.insert(d, s);
-            }
-        }
-        // Per-day per-app seconds, already sorted by date then usage.
-        let mut per_day: std::collections::BTreeMap<String, Vec<(String, u64)>> =
-            std::collections::BTreeMap::new();
-        {
-            let mut stmt = self.conn.prepare(
-                "SELECT date, display_name, SUM(duration_seconds)
-                 FROM activity WHERE date >= ?1
-                 GROUP BY date, display_name ORDER BY date DESC, 3 DESC",
-            )?;
-            let rows = stmt.query_map(params![since_date], |row| {
-                let seconds: i64 = row.get(2)?;
+        let mut rows: Vec<(String, i64, i64)> = stmt
+            .query_map(params![date], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    seconds.max(0) as u64,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
                 ))
-            })?;
-            for row in rows {
-                let (d, name, s) = row?;
-                let list = per_day.entry(d).or_default();
-                if list.len() < top {
-                    list.push((name, s));
-                }
-            }
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.sort_unstable();
+        Ok(merge_app_totals(rows))
+    }
+
+    /// Top applications over the week since `since_date` (inclusive),
+    /// honestly merged across all contributing devices and days, sorted by
+    /// merged seconds, capped at 12 entries for the UI.
+    pub fn week_totals(&self, since_date: &str) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT display_name, started_at, ended_at
+             FROM activity WHERE date >= ?1",
+        )?;
+        let mut rows: Vec<(String, i64, i64)> = stmt
+            .query_map(params![since_date], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.sort_unstable();
+        Ok(merge_app_totals(rows).into_iter().take(12).collect())
+    }
+
+    /// Per-day history since `since_date` (inclusive), newest day first.
+    /// Totals are the per-day union of all intervals across all devices —
+    /// the honest "human was active that day" time, and per-app entries
+    /// carry that app's merged seconds.
+    pub fn history(&self, since_date: &str, top: usize) -> Result<Vec<DayHistory>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT date, display_name, started_at, ended_at
+             FROM activity WHERE date >= ?1 ORDER BY date",
+        )?;
+        let rows = stmt.query_map(params![since_date], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut by_date: std::collections::BTreeMap<String, Vec<(String, i64, i64)>> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let (date, name, start, end) = row?;
+            by_date.entry(date).or_default().push((name, start, end));
         }
-        let mut out: Vec<DayHistory> = totals
+        let mut out: Vec<DayHistory> = by_date
             .into_iter()
-            .map(|(date, total_seconds)| DayHistory {
-                apps: per_day.remove(&date).unwrap_or_default(),
-                date,
-                total_seconds,
+            .map(|(date, segments)| {
+                let mut ordered = segments;
+                ordered.sort_unstable();
+                let merged = crate::merge::merge_day(&ordered);
+                let mut apps: Vec<(String, u64)> = merged
+                    .per_app
+                    .into_iter()
+                    .map(|(app, _, merged_seconds)| (app, merged_seconds.max(0) as u64))
+                    .collect();
+                apps.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                apps.truncate(top);
+                DayHistory {
+                    apps,
+                    date,
+                    total_seconds: merged.unique_active_seconds.max(0) as u64,
+                }
             })
             .collect();
         out.sort_by(|a, b| b.date.cmp(&a.date));
         Ok(out)
     }
+
+    /// Import segments pulled down from the cloud: other devices' activity.
+    ///
+    /// `segment_uuid` carries the cloud's globally unique id, so re-importing
+    /// the same rows is a no-op — never a double count, and even a row this
+    /// device uploaded itself (mirrored in another pull round) can't stick
+    /// twice. Imported rows are born already synced: they are part of the
+    /// cloud's acknowledged history, the upload flow never sees them
+    /// (`synced_at` set), and normal retention ages them out like local rows.
+    pub fn import_remote_segments(
+        &self,
+        rows: &[crate::cloud::RemoteSegment],
+        synced_at: i64,
+    ) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut inserted: usize = 0;
+        {
+            let mut stmt = tx.prepare(
+            "INSERT OR IGNORE INTO activity
+                (application_class, display_name, category, started_at, ended_at,
+                 duration_seconds, date, segment_uuid, synced_at, sync_batch_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )?;
+            for row in rows {
+                inserted += stmt
+                    .execute(params![
+                        row.app_class,
+                        row.app_name,
+                        row.category,
+                        row.start_utc,
+                        row.end_utc,
+                        row.duration_seconds,
+                        row.activity_date,
+                        row.segment_id,
+                        synced_at,
+                        "pull",
+                    ])?
+                    .min(1);
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
 
     /// Delete everything strictly older than `cutoff_date` ("YYYY-MM-DD").
     /// When `only_synced` is true (cloud sync configured), rows that were
@@ -451,6 +494,22 @@ fn is_corruption(message: &str) -> bool {
         || lowered.contains("malformed")
         || lowered.contains("encrypted")
 }
+
+/// Honest per-app totals from raw `(app, start, end)` intervals — the union
+/// of each app's intervals via the merge oracle. Overlapping device time is
+/// counted once per app; non-overlapping time is the plain sum.
+fn merge_app_totals(mut segments: Vec<(String, i64, i64)>) -> Vec<(String, u64)> {
+    segments.sort_unstable();
+    let merged = crate::merge::merge_day(&segments);
+    let mut out: Vec<(String, u64)> = merged
+        .per_app
+        .into_iter()
+        .map(|(app, _, merged_seconds)| (app, merged_seconds.max(0) as u64))
+        .collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out
+}
+
 
 fn quarantine_and_reopen(path: &Path, reason: &str) -> Result<Db> {
     let quarantine = path.with_extension(format!("corrupt-{}", crate::unix_now()));
@@ -831,5 +890,48 @@ mod tests {
             })
             .unwrap();
         assert_eq!(sum, long.duration());
+    }
+
+    #[test]
+    fn remote_import_dedupes_by_uuid_and_totals_stay_honest() {
+        let dir = TempDir::new("pullimport");
+        let db = Db::open(&dir.0.join("activity.db")).unwrap();
+
+        // The laptop's day: one VS Code hour. This (second) device also has
+        // VS Code 9:30–10:30 for the same wall-clock window.
+        let remote = |id: &str, start: i64, end: i64| crate::cloud::RemoteSegment {
+            segment_id: id.to_string(),
+            device_id: "laptop".to_string(),
+            app_name: "Visual Studio Code".to_string(),
+            app_class: "code".to_string(),
+            category: "editor".to_string(),
+            start_utc: start,
+            end_utc: end,
+            duration_seconds: end - start,
+            activity_date: "1970-01-06".to_string(),
+            ingested_at: 42,
+        };
+        let rows = vec![
+            remote("u-laptop", day5(9, 0, 0), day5(10, 0, 0)),
+            remote("u-pc", day5(9, 30, 0), day5(10, 30, 0)),
+        ];
+
+        assert_eq!(db.import_remote_segments(&rows, 1000).unwrap(), 2);
+        // Same uuids again: the import is a no-op, never a double count.
+        assert_eq!(db.import_remote_segments(&rows, 1000).unwrap(), 0);
+
+        // 2 h combined (9–10 + 9:30–10:30) but honestly merged = 9–10:30.
+        let totals = db.today_totals("1970-01-06").unwrap();
+        assert_eq!(
+            totals,
+            vec![("Visual Studio Code".to_string(), 5400)]
+        );
+        let history = db.history("1970-01-06", 12).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].total_seconds, 5400);
+
+        // Imported rows are born synced: they are cloud history, the upload
+        // cycle never picks them up.
+        assert_eq!(db.pending_count(-1).unwrap(), 0);
     }
 }

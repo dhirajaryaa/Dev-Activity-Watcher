@@ -314,6 +314,7 @@ pub async fn run_daemon(config_path: Option<&Path>) -> Result<()> {
                     Ok(report) => report,
                     Err(e) => sync::SyncReport {
                         uploaded: 0,
+                        pulled: 0,
                         batches: 0,
                         pending: 0,
                         error: Some(format!("sync task failed: {e}")),
@@ -671,8 +672,9 @@ pub fn run_sync_cli(config_path: Option<&Path>, check: bool) -> Result<()> {
     }
     let record = sync::read_record(&dirs.state);
     println!(
-        "synced {} segment(s) in {} batch(es); {} pending{}",
+        "synced {} segment(s) up and {} down in {} batch(es); {} pending{}",
         report.uploaded,
+        report.pulled,
         report.batches,
         report.pending,
         record

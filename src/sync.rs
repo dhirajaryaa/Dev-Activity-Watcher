@@ -40,12 +40,19 @@ pub struct SyncRecord {
     pub pending: u64,
     /// Unix time of the last cloud-retention pass.
     pub last_retention_at: Option<i64>,
+    /// Highest cloud `ingested_at` boundary already pulled. The next pull
+    /// restarts just before it (inclusive overlap), so a cloud write that
+    /// committed at the boundary second is still seen, and uuid-based
+    /// deduplication makes the overlap free.
+    #[serde(default)]
+    pub last_pull_cursor: Option<i64>,
 }
 
 /// Outcome of one sync attempt.
 #[derive(Debug, Clone)]
 pub struct SyncReport {
     pub uploaded: usize,
+    pub pulled: usize,
     pub batches: usize,
     pub pending: usize,
     /// None on success; Some(message) when the attempt failed. The message
@@ -59,6 +66,7 @@ impl SyncReport {
     fn skipped(pending: usize) -> Self {
         SyncReport {
             uploaded: 0,
+            pulled: 0,
             batches: 0,
             pending,
             error: None,
@@ -224,6 +232,35 @@ pub fn upload_pending(
     Ok((uploaded, batches))
 }
 
+/// Download closed segments of other devices and import them locally.
+///
+/// Returns `(imported, boundary)` — the number of database rows actually
+/// inserted (re-downloads deduplicate to zero) and the highest cloud
+/// `ingested_at` seen this round, which the caller turns into the next
+/// pull cursor. Two devices pointing at the same Turso database converge:
+/// each pushes its own rows and pulls everyone else's, and the interval
+/// union in the cloud keeps simultaneous multi-machine use honest.
+pub fn pull_remote(
+    db: &Db,
+    backend: &mut dyn CloudBackend,
+    device_id: &str,
+    cursor: Option<i64>,
+    since_date: &str,
+    now: i64,
+) -> Result<(usize, i64)> {
+    let rows = cloud::pull_segments(backend, device_id, cursor, since_date)?;
+    if rows.is_empty() {
+        return Ok((0, cursor.unwrap_or(0)));
+    }
+    let boundary = rows
+        .iter()
+        .map(|row| row.ingested_at)
+        .max()
+        .unwrap_or_default();
+    let imported = db.import_remote_segments(&rows, now)?;
+    Ok((imported, boundary))
+}
+
 /// Full sync attempt: schema bootstrap → optional daily cloud retention →
 /// upload pending rows → persist the record. Network/database problems are
 /// reported in the returned `SyncReport`, never as a panic; local rows stay
@@ -240,6 +277,7 @@ pub fn sync_once(
         Err(e) => {
             return SyncReport {
                 uploaded: 0,
+                pulled: 0,
                 batches: 0,
                 pending: 0,
                 error: Some(format!("cannot open local database: {e}")),
@@ -261,6 +299,7 @@ pub fn sync_once(
         Err(e) => {
             let report = SyncReport {
                 uploaded: 0,
+                pulled: 0,
                 batches: 0,
                 pending: pending as usize,
                 error: Some(e.to_string()),
@@ -275,6 +314,7 @@ pub fn sync_once(
         Err(e) => {
             let report = SyncReport {
                 uploaded: 0,
+                pulled: 0,
                 batches: 0,
                 pending: pending as usize,
                 error: Some(e.to_string()),
@@ -290,6 +330,7 @@ pub fn sync_once(
         Err(e) => {
             let report = SyncReport {
                 uploaded: 0,
+                pulled: 0,
                 batches: 0,
                 pending: pending as usize,
                 error: Some(format!("device id: {e}")),
@@ -308,6 +349,7 @@ pub fn sync_once(
     if let Err(e) = backend.transaction(ddl) {
         let report = SyncReport {
             uploaded: 0,
+            pulled: 0,
             batches: 0,
             pending: pending as usize,
             error: Some(format!("cloud schema setup failed: {e}")),
@@ -333,6 +375,44 @@ pub fn sync_once(
 
     match upload_pending(&db, &mut backend, &device, open_row_id, now) {
         Ok((uploaded, batches)) => {
+            // Pull runs on every successful contact, upload or not — that is
+            // what lets a laptop's day show up on this PC and vice versa.
+            let pull_since = retention_cutoff(config.sync.cloud_retention_days, now);
+            let (pulled, pull_boundary) = match pull_remote(
+                &db,
+                &mut backend,
+                &device,
+                record.last_pull_cursor,
+                &pull_since,
+                now,
+            ) {
+                Ok((imported, boundary)) => (imported, boundary),
+                Err(e) => {
+                    // The push succeeded; only the download tripped. Surface
+                    // what is actually stale instead of faking success.
+                    tracing::warn!(target: "atw", error = %e, "cloud pull failed");
+                    let message = format!("pull: {e}");
+                    let pending_now = db.pending_count(open_row_id).unwrap_or(0) as u64;
+                    record.last_attempt = Some(rfc3339_now());
+                    record.last_error = Some(message.clone());
+                    record.pending = pending_now;
+                    let _ = write_record(state_dir, &record);
+                    return SyncReport {
+                        uploaded,
+                        pulled: 0,
+                        batches,
+                        pending: pending_now as usize,
+                        error: Some(message),
+                        skipped: false,
+                    };
+                }
+            };
+            if pull_boundary > record.last_pull_cursor.unwrap_or(0) {
+                // Inclusive overlap: the next walk starts at the page's last
+                // ingested second, so a concurrent-write tie cannot fall
+                // through a gap; replays are uuid-no-ops.
+                record.last_pull_cursor = Some((pull_boundary - 1).max(0));
+            }
             let pending_now = db.pending_count(open_row_id).unwrap_or(0) as u64;
             record.last_sync = Some(rfc3339_now());
             record.last_attempt = record.last_sync.clone();
@@ -341,6 +421,7 @@ pub fn sync_once(
             let _ = write_record(state_dir, &record);
             SyncReport {
                 uploaded,
+                pulled,
                 batches,
                 pending: pending_now as usize,
                 error: None,
@@ -356,6 +437,7 @@ pub fn sync_once(
             let _ = write_record(state_dir, &record);
             SyncReport {
                 uploaded: 0,
+                pulled: 0,
                 batches: 0,
                 pending: pending_now as usize,
                 error: Some(message),
@@ -621,5 +703,54 @@ mod tests {
             retention_cutoff(90, now),
             crate::local_date_string(110 * DAY)
         );
+    }
+
+    #[test]
+    fn pull_walks_the_ingest_log_once_and_dedupes() {
+        let dir = tmpdir("pull");
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+
+        // The laptop records and uploads one segment.
+        let mut backend = LocalBackend::open_in_memory().unwrap();
+        backend.init_schema().unwrap();
+        let mut laptop = Db::open(&data.join("laptop.db")).unwrap();
+        let up = vec![crate::tracker::Segment {
+            class: "code".into(),
+            display_name: "VS Code".into(),
+            category: crate::classify::Category::Editor,
+            started_at: 5 * DAY,
+            ended_at: 5 * DAY + 3600,
+        }];
+        let mut open_row = None;
+        laptop
+            .flush(None, &mut open_row, &[], &up, 0, &crate::local_date_string)
+            .unwrap();
+        let (_, batches) =
+            upload_pending(&laptop, &mut backend, "laptop", -1, 100).unwrap();
+        assert_eq!(batches, 1);
+
+        // This PC pulls the same cloud database in.
+        let pc = Db::open(&data.join("pc.db")).unwrap();
+        let record = SyncRecord::default();
+        let since = "1970-01-01".to_string();
+        let (pulled, boundary) =
+            pull_remote(&pc, &mut backend, "pc", record.last_pull_cursor, &since, 200)
+                .unwrap();
+        assert_eq!(pulled, 1);
+        assert_eq!(boundary, 100, "boundary is the page's ingested_at");
+
+        // The laptop's hour is now on this PC...
+        let totals = pc
+            .today_totals(&crate::local_date_string(5 * DAY))
+            .unwrap();
+        assert_eq!(totals, vec![("VS Code".to_string(), 3600)]);
+        // ...born synced, so it is never uploaded back...
+        assert_eq!(pc.pending_count(-1).unwrap(), 0);
+        // ...and the next pull returns nothing new (dedupe + cursor).
+        let (pulled_second, _) =
+            pull_remote(&pc, &mut backend, "pc", Some(boundary - 1), &since, 300).unwrap();
+        assert_eq!(pulled_second, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

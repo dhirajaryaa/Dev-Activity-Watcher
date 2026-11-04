@@ -468,6 +468,131 @@ pub fn portfolio_unique(
         .collect())
 }
 
+/// One remote segment pulled down from the cloud — another device's closed
+/// activity row, exactly the shape an upload sends up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteSegment {
+    pub segment_id: String,
+    pub device_id: String,
+    pub app_name: String,
+    pub app_class: String,
+    pub category: String,
+    pub start_utc: i64,
+    pub end_utc: i64,
+    pub duration_seconds: i64,
+    pub activity_date: String,
+    pub ingested_at: i64,
+}
+
+/// Simplicity guard: one bounded page per pull. A page exactly this full
+/// simply leaves the remainder for the next sync cycle — the cursor moves
+/// through the log a page at a time and nothing is ever re-downloaded from
+/// an older cycle, because the cursor is set to the page's last boundary
+/// (overlapping by design, deduplicated by uuid).
+pub const PULL_PAGE: i64 = 5000;
+
+fn text_of(cell: Option<&CloudValue>) -> Option<String> {
+    match cell {
+        Some(CloudValue::Text(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn int_of(cell: Option<&CloudValue>) -> Option<i64> {
+    match cell {
+        Some(CloudValue::Int(i)) => Some(*i),
+        _ => None,
+    }
+}
+
+/// Pull closed segments from devices other than `my_device_id`.
+///
+/// With a pull cursor (previous fully ingested boundary) the query walks
+/// the ingest log cheaply; on the very first pull it falls back to the
+/// retention window (`since_date`) so a freshly configured second device
+/// imports the tail of history. Re-downloading is always a no-op: the
+/// caller deduplicates on `segment_id`. Read-only token friendly.
+pub fn pull_segments(
+    backend: &mut dyn CloudBackend,
+    my_device_id: &str,
+    cursor: Option<i64>,
+    since_date: &str,
+) -> Result<Vec<RemoteSegment>> {
+    let cursor = cursor.filter(|c| *c > 0);
+    let (sql, params) = match cursor {
+        Some(c) => (
+            "SELECT segment_id, device_id, app_name, app_class, category,
+                    start_utc, end_utc, duration_seconds, activity_date, ingested_at
+             FROM segments
+             WHERE device_id != ? AND ingested_at > ?
+             ORDER BY ingested_at, segment_id
+             LIMIT ?",
+            vec![
+                CloudValue::text(my_device_id),
+                CloudValue::int(c),
+                CloudValue::int(PULL_PAGE),
+            ],
+        ),
+        None => (
+            "SELECT segment_id, device_id, app_name, app_class, category,
+                    start_utc, end_utc, duration_seconds, activity_date, ingested_at
+             FROM segments
+             WHERE device_id != ? AND activity_date >= ?
+             ORDER BY ingested_at, segment_id
+             LIMIT ?",
+            vec![
+                CloudValue::text(my_device_id),
+                CloudValue::text(since_date),
+                CloudValue::int(PULL_PAGE),
+            ],
+        ),
+    };
+    let rows = backend.query(&sql, params)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let parsed = (
+            text_of(row.first()),
+            text_of(row.get(1)),
+            text_of(row.get(2)),
+            text_of(row.get(3)),
+            text_of(row.get(4)),
+            int_of(row.get(5)),
+            int_of(row.get(6)),
+            int_of(row.get(7)),
+            text_of(row.get(8)),
+            int_of(row.get(9)),
+        );
+        if let (
+            Some(segment_id),
+            Some(device_id),
+            Some(app_name),
+            Some(app_class),
+            Some(category),
+            Some(start_utc),
+            Some(end_utc),
+            Some(duration_seconds),
+            Some(activity_date),
+            ingested_at,
+        ) = parsed
+        {
+            out.push(RemoteSegment {
+                segment_id,
+                device_id,
+                app_name,
+                app_class,
+                category,
+                start_utc,
+                end_utc,
+                duration_seconds,
+                activity_date,
+                ingested_at: ingested_at.unwrap_or_default(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+
 // ---------------------------------------------------------------------------
 // LocalBackend — rusqlite against a real SQLite file (or :memory: for tests).
 // Production uses http_pipeline::HttpBackend; both satisfy CloudBackend.
