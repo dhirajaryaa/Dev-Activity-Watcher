@@ -39,14 +39,14 @@ omarchy plugin add https://github.com/dhirajaryaa/Dev-Activity-Watcher
 Or clone and build from source:
 
 ```bash
-git clone https://github.com/dhirajaryaa/Dev-Activity-Watcher.git ~/.local/share/omarchy/plugins/dhirajarya.atw
-cd ~/.local/share/omarchy/plugins/dhirajarya.atw
+git clone https://github.com/dhirajaryaa/Dev-Activity-Watcher.git ~/.local/share/omarchy/plugins/dev-activity-watcher.atw
+cd ~/.local/share/omarchy/plugins/dev-activity-watcher.atw
 packaging/install.sh
 ```
 
 That builds the release binaries, installs `atwd` + `atw` to `~/.local/bin`,
 enables the systemd user unit, and installs + enables the shell plugin
-(`dhirajarya.atw`, shown as **Dev Activity Watcher**).
+(`dev-activity-watcher.atw`, shown as **Dev Activity Watcher**).
 
 ## Cloud sync (optional, bring your own database)
 

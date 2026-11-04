@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "dhirajarya.atw",
+  "id": "dev-activity-watcher.atw",
   "name": "Dev Activity Watcher",
   "version": "0.1.0",
-  "author": "dhirajarya",
+  "author": "Dev Activity Watcher",
   "license": "MIT",
   "description": "Privacy-first developer activity tracker: today's per-app time and 7-day history for editors, AI agents, browsers, and terminals. Local by default; optional sync to your own database.",
   "kinds": [

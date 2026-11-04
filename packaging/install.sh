@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ATW_HOME="${ATW_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-PLUGIN_ID="dhirajarya.atw"
+PLUGIN_ID="dev-activity-watcher.atw"
 PLUGIN_SRC="$ATW_HOME"
 PLUGIN_DST="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 BIN_DST="$HOME/.local/bin/atwd"

@@ -17,7 +17,7 @@ import qs.Ui
 // Cloud sync is optional and handled entirely by the daemon.
 BarWidget {
   id: root
-  moduleName: "dhirajarya.atw"
+  moduleName: "dev-activity-watcher.atw"
 
   // ---- Daemon status ----
   property var status: null
@@ -163,7 +163,7 @@ BarWidget {
   }
 
   IpcHandler {
-    target: "dhirajarya.atw"
+    target: "dev-activity-watcher.atw"
 
     function open(): void { root.open() }
     function close(): void { root.close() }

@@ -5,7 +5,7 @@
 # Your activity database is NOT touched unless you pass --purge.
 set -euo pipefail
 
-PLUGIN_ID="dhirajarya.atw"
+PLUGIN_ID="dev-activity-watcher.atw"
 PURGE=0
 [[ "${1:-}" == "--purge" ]] && PURGE=1
 

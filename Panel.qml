@@ -20,8 +20,8 @@ import qs.Ui
 // name left, time right. Nothing is centered by centering the window.
 Panel {
   id: root
-  moduleName: "dhirajarya.atw"
-  ipcTarget: "dhirajarya.atw"
+  moduleName: "dev-activity-watcher.atw"
+  ipcTarget: "dev-activity-watcher.atw"
   manageIpc: false
 
   property var anchorItem: null
