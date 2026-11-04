@@ -1,0 +1,37 @@
+[package]
+name = "atw"
+version = "0.1.0"
+edition = "2021"
+description = "Activity Time Watch — local-only app usage tracker for Omarchy/Hyprland"
+license = "MIT"
+
+[lib]
+name = "atw"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atw"
+path = "src/bin/atw.rs"
+
+[[bin]]
+name = "atwd"
+path = "src/bin/atwd.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
