@@ -48,6 +48,14 @@ That builds the release binaries, installs `atwd` + `atw` to `~/.local/bin`,
 enables the systemd user unit, and installs + enables the shell plugin
 (`dev-activity-watcher.atw`, shown as **Dev Activity Watcher**).
 
+> **Why the installer restarts the shell:** the Omarchy shell runs with its
+> own file watcher disabled, and a plugin rescan does not re-instantiate
+> widget code that is already mounted — an updated `Panel.qml` would keep
+> the previous popup alive while looking broken (hover/clicks nothing like
+> the release notes). The installer therefore calls `omarchy-restart-shell`
+> when a shell is running. If you ever edit the plugin's QML files by hand,
+> run `omarchy-restart-shell` afterwards to load your changes.
+
 ## Cloud sync (optional, bring your own database)
 
 No accounts, no Turso CLI, no OAuth — paste two values in the panel:

@@ -46,6 +46,18 @@ else
   omarchy plugin enable "$PLUGIN_ID" --section right
 fi
 
+# The Omarchy shell starts with Quickshell's file watcher disabled
+# (QS_DISABLE_FILE_WATCHER=1) and its plugin rescan does not re-instantiate
+# already-mounted widget QML, so freshly written Panel.qml would never reach
+# the screen — the visible popup stays the one from before the update.
+# When an Omarchy shell instance is running, restarting the shell is the
+# reliable way to load the new code. A fresh-boot install picks everything
+# up when the shell starts anyway, so there is nothing to do in that case.
+if quickshell list -a 2>/dev/null | grep -q "/usr/share/omarchy/shell"; then
+  echo "==> Restarting the Omarchy shell so the new QML actually loads"
+  omarchy-restart-shell >/dev/null 2>&1 || true
+fi
+
 echo
 echo "Installed. The bar widget appears after the shell reloads (a few seconds)."
 echo "  daemon : systemctl --user status atwd"
