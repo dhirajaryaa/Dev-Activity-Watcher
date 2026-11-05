@@ -95,4 +95,4 @@ sqlite3 ~/.local/share/atw/activity.db \
 ```
 
 For the cloud side (read-only token recommended), see
-[`docs/PORTFOLIO.md`](docs/PORTFOLIO.md).
+[`docs/database-schema.md`](docs/database-schema.md).

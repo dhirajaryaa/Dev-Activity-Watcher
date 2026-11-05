@@ -117,7 +117,7 @@ packaging/uninstall.sh --purge    # also deletes the database
 ```
 
 Turning cloud sync off does not delete anything in the cloud; the database is
-yours, and the schema/queries in [`docs/PORTFOLIO.md`](docs/PORTFOLIO.md) let
+yours, and the schema/queries in [`docs/database-schema.md`](docs/database-schema.md) let
 you read it with a read-only token.
 
 ## Configuration
@@ -181,7 +181,7 @@ Requirements: Rust (stable), Hyprland, and the Omarchy shell. The release
 binaries are small (≈2.5 MB); there are no Python/Node runtimes, no daemon
 framework, and no polling loop.
 
-[`docs/PORTFOLIO.md`](docs/PORTFOLIO.md) documents the cloud schema and
+[`docs/database-schema.md`](docs/database-schema.md) documents the cloud schema and
 read-only queries for dashboards.
 
 ## License
