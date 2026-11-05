@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dev Activity Watcher — Complete Documentation</title>
+  <meta name="description" content="Complete documentation for atw: installation, Turso cloud database configuration, tokens, database schema, queries, and portfolio dashboards.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=League+Spartan:wght@700&family=Figtree:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+  <!-- HERO: Navigation on the midline -->
+  <header class="hero-stage">
+    <video class="hero-video-bg" autoplay muted loop playsinline preload="metadata" poster="assets/montreal-clock-tower-clock-mechanism-poster.jpg" aria-hidden="true">
+      <source src="assets/montreal-clock-tower-clock-mechanism.webm" type="video/webm">
+    </video>
+
+    <div class="frame" style="width: 100%; position: relative; z-index: 2; padding-top: 1.5rem;">
+      <div style="font-size: var(--step-small); color: #e0e0e0; font-weight: 600;">
+        Privacy-First Activity Tracking for Omarchy Linux
+      </div>
+    </div>
+
+    <div class="hero-midline-rail">
+      <div class="frame hero-rail-inner">
+        <h1>Dev Activity Watcher</h1>
+        <p class="hero-rail-lead">
+          Developer time tracking for Omarchy Linux with Wayland AFK detection and multi-device Turso sync.
+        </p>
+        <div class="hero-rail-actions">
+          <a href="#quickstart" class="btn btn-primary">Quickstart</a>
+          <a href="#database-setup" class="rail-link">Turso Database</a>
+          <a href="#schema" class="rail-link">SQL Schema</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero-lower-strip-wrap" data-ui>
+      <div class="frame hero-lower-strip">
+        <div class="hero-strip-item">Daemon: Rust (Hyprland IPC + ext-idle-notify-v1)</div>
+        <div class="hero-strip-item">Sync: LibSQL / Turso HTTPS pipeline</div>
+        <div class="hero-strip-item">Storage: SQLite WAL (~/.local/share/atw)</div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- SECTION 1: SHOWCASE (One row, three states) -->
+    <section class="frame section-gap" id="interface">
+      <div class="showcase-grid">
+        <div class="showcase-states-col" aria-hidden="true">
+          <div class="showcase-state-label">Recorded</div>
+          <div class="showcase-state-label active">Focused</div>
+          <div class="showcase-state-label">Purged</div>
+        </div>
+
+        <div class="showcase-cards-col">
+          <div>
+            <h2>Interface States</h2>
+            <p style="margin-top: 0.5rem; color: var(--muted);">
+              How atw presents tracked time in the Omarchy bar and panel. Hovering any app row reveals an instant deletion option.
+            </p>
+          </div>
+
+          <!-- State 1 -->
+          <div class="app-row-widget entrance" data-ui>
+            <div class="app-row-left">
+              <div class="app-glyph">VS</div>
+              <div>
+                <div class="app-name-title">Visual Studio Code</div>
+                <div class="app-meta-sub">editor · active background segment</div>
+              </div>
+            </div>
+            <div class="app-row-right">
+              <div class="app-time-badge">2h 45m</div>
+            </div>
+          </div>
+
+          <!-- State 2 (Live interactive) -->
+          <div class="app-row-widget interactive entrance" id="demo-hover-row" data-ui>
+            <div class="app-row-left">
+              <div class="app-glyph">CR</div>
+              <div>
+                <div class="app-name-title">Cursor</div>
+                <div class="app-meta-sub" id="demo-row-status">agent · click Delete to test purge flow</div>
+              </div>
+            </div>
+            <div class="app-row-right">
+              <div class="app-time-badge">1h 12m</div>
+              <button class="btn btn-surface" id="demo-del-btn" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;" aria-label="Purge Cursor history">Delete</button>
+            </div>
+          </div>
+
+          <!-- State 3 -->
+          <div class="app-row-widget entrance" style="opacity: 0.6;" data-ui>
+            <div class="app-row-left">
+              <div class="app-glyph" style="background: #e2e2e2;">FF</div>
+              <div>
+                <div class="app-name-title">Firefox Developer Edition</div>
+                <div class="app-meta-sub">browser · flushed to SQLite WAL</div>
+              </div>
+            </div>
+            <div class="app-row-right">
+              <div class="app-time-badge">48m</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="showcase-side-detail entrance">
+          <figure style="margin: 0;">
+            <img src="assets/j-b-gooding-manufacture-of-chronometer-balances.jpg" width="1920" height="2801" alt="Archival chronometer patent diagram" loading="lazy">
+            <figcaption>Chronometer balance manufacture, Patent Office 1874.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 2: FEATURES (Fixed output, live controls) -->
+    <section class="frame section-gap" id="controls">
+      <div class="split-interactive-layout">
+        <div class="split-sticky-output entrance">
+          <h3>Live Status Preview</h3>
+          <p style="font-size: var(--step-small); color: var(--muted); margin-bottom: 1rem;">
+            Real-time representation of how changing settings adjusts the status chip and daemon aggregation.
+          </p>
+
+          <div class="bar-preview-shell" data-ui>
+            <span style="font-size: 0.8rem; color: #a0a0a0;">Hyprland Status Bar</span>
+            <span class="bar-preview-chip" id="bar-chip-text">󱚺 4h</span>
+          </div>
+
+          <div class="live-totals-card" data-ui>
+            <div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem;">Daemon Configuration State</div>
+            <div class="live-totals-list">
+              <div class="live-total-row">
+                <span id="preview-sync-val">Interval: 600s</span>
+                <span style="color: var(--accent); font-weight: 600;">Active</span>
+              </div>
+              <div class="live-total-row">
+                <span id="preview-cat-val">Tracking: developer allowlist</span>
+                <span>Filtered</span>
+              </div>
+              <div class="live-total-row">
+                <span>AFK detection</span>
+                <span>ext-idle-notify-v1 (300s)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="split-controls-col">
+          <div>
+            <h2>Configurable Parameters</h2>
+            <p style="color: var(--muted); margin-top: 0.5rem;">
+              Settings are stored in <code>~/.config/atw/config.toml</code> and can be edited directly or through the Omarchy bar popup.
+            </p>
+          </div>
+
+          <div class="capability-block entrance">
+            <h3>Bar Display Format</h3>
+            <p>Right-clicking the bar icon cycles display formats between icon-only, hours, and full hours with minutes.</p>
+            <div class="control-toggle-row">
+              <button class="toggle-chip" data-chip-format="icon">Icon Only</button>
+              <button class="toggle-chip selected" data-chip-format="hours">Icon + Hours</button>
+              <button class="toggle-chip" data-chip-format="detailed">Hours + Minutes</button>
+            </div>
+          </div>
+
+          <div class="capability-block entrance">
+            <h3>Cloud Sync Cadence</h3>
+            <p>Background sync batches closed segments over HTTPS to Turso. Shorter intervals keep multi-machine setups closer in sync.</p>
+            <div class="control-toggle-row">
+              <button class="toggle-chip" data-chip-sync="300s">5 Minutes</button>
+              <button class="toggle-chip selected" data-chip-sync="600s">10 Minutes</button>
+              <button class="toggle-chip" data-chip-sync="900s">15 Minutes</button>
+              <button class="toggle-chip" data-chip-sync="1800s">30 Minutes</button>
+            </div>
+          </div>
+
+          <div class="capability-block entrance">
+            <h3>Category Allowlist</h3>
+            <p>Only dev applications are monitored. Media players, file managers, and games are discarded on arrival.</p>
+            <div class="control-toggle-row">
+              <button class="toggle-chip selected" data-chip-cat="developer">Dev Tools (Default)</button>
+              <button class="toggle-chip" data-chip-cat="strict">Code Editors Only</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 3: HOW IT WORKS (Call and response) -->
+    <section class="frame section-gap" id="quickstart">
+      <div class="call-response-flow">
+        <div>
+          <h2>Installation &amp; Execution</h2>
+          <p style="color: var(--muted); margin-top: 0.5rem;">
+            Run these commands in an Omarchy terminal to install the systemd user service, compile the binaries, and mount the widget.
+          </p>
+        </div>
+
+        <div class="exchange-unit entrance">
+          <h3>First, install from repository.</h3>
+          <p>Installs binaries to <code>~/.local/bin</code> and enables the systemd service unit.</p>
+          <div class="call-panel">
+            <div class="call-header">
+              <span>Terminal Input</span>
+              <button class="copy-btn" data-copy-target="code-install">Copy</button>
+            </div>
+            <pre><code id="code-install">omarchy plugin add https://github.com/dhirajaryaa/Dev-Activity-Watcher</code></pre>
+          </div>
+          <div class="response-panel" data-ui>
+            <strong>Daemon Response:</strong> Builds <code>atwd</code> release binary, registers <code>dev-activity-watcher.atw</code> in the bar, and initiates Wayland event capture.
+          </div>
+        </div>
+
+        <div class="exchange-unit entrance">
+          <h3>Then, inspect tracking status.</h3>
+          <p>Read today's union intervals directly from the local SQLite database.</p>
+          <div class="call-panel">
+            <div class="call-header">
+              <span>Terminal Input</span>
+              <button class="copy-btn" data-copy-target="code-status">Copy</button>
+            </div>
+            <pre><code id="code-status">atw status</code></pre>
+          </div>
+          <div class="response-panel" data-ui>
+            <strong>Standard Output:</strong><br>
+            <code>Visual Studio Code: 2h 45m<br>Cursor: 1h 12m<br>Firefox: 48m<br>Today's union active time: 4h 18m</code>
+          </div>
+        </div>
+
+        <div class="exchange-unit entrance">
+          <h3>Finally, verify cloud connectivity.</h3>
+          <p>Tests the Turso database URL and token credentials without pushing local segments.</p>
+          <div class="call-panel">
+            <div class="call-header">
+              <span>Terminal Input</span>
+              <button class="copy-btn" data-copy-target="code-check">Copy</button>
+            </div>
+            <pre><code id="code-check">atw sync --check</code></pre>
+          </div>
+          <div class="response-breakout" data-ui>
+            <strong>Verification Result:</strong><br>
+            <code>connected — cloud has 1,280 stored segment(s), schema verified.</code>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 4: TURSO CLOUD SETUP & TOKENS -->
+    <section class="frame section-gap" id="database-setup">
+      <div>
+        <h2>Turso Database Setup</h2>
+        <p style="color: var(--muted); margin-top: 0.5rem; margin-bottom: 2.5rem;">
+          How to create your self-owned Turso database, issue read-write and read-only tokens, and wire sync.
+        </p>
+      </div>
+
+      <div class="turso-guide-grid">
+        <div class="entrance">
+          <div class="step-box">
+            <h3>1. Create a Turso Database</h3>
+            <p>You can create a free database via the Turso CLI or web dashboard:</p>
+            <pre><code># Install Turso CLI if not present
+curl -sSfL https://get.tur.so/install.sh | bash
+
+# Authenticate and provision a database
+turso auth login
+turso db create dev-activity</code></pre>
+          </div>
+
+          <div class="step-box">
+            <h3>2. Generate Database Tokens</h3>
+            <p>Create two separate tokens: one read-write for the tracking daemon, and one read-only for web dashboards and portfolios.</p>
+            <pre><code># Show your database URL (libsql://dev-activity-[user].turso.io)
+turso db show dev-activity --url
+
+# Generate daemon read-write token (default: no expiration)
+turso db tokens create dev-activity
+
+# Generate dashboard read-only token for GitHub Pages
+turso db tokens create dev-activity --read-only</code></pre>
+          </div>
+
+          <div class="step-box">
+            <h3>3. Configure the Daemon</h3>
+            <p>Save the URL and write token into atw using either the bar panel or the CLI:</p>
+            <pre><code># Set the database URL
+atw config set sync.url "https://dev-activity-username.turso.io"
+
+# Set the write token (reads from stdin to keep secret out of process list)
+echo "YOUR_WRITE_TOKEN" | atw config set sync.token -
+
+# Restart daemon to apply
+systemctl --user restart atwd</code></pre>
+          </div>
+        </div>
+
+        <div class="entrance">
+          <div class="callout-box">
+            <h3 style="margin-bottom: 0.75rem;">Token Security Model</h3>
+            <p style="margin-bottom: 1rem;">
+              <strong>Write Token:</strong> Stored locally in <code>~/.config/atw/config.toml</code> (owner-only permission mode <code>0600</code>). Never publish this token.
+            </p>
+            <p style="margin-bottom: 1rem;">
+              <strong>Read-Only Token:</strong> Safe for public portfolio dashboards, read queries, and personal GitHub Pages. It can execute <code>SELECT</code> but cannot alter or delete rows.
+            </p>
+            <p>
+              <strong>Zero-Knowledge Content:</strong> atw never records window titles, file paths, keystrokes, or code snippets. Only timestamps, app names, and high-level categories leave your machine.
+            </p>
+          </div>
+
+          <figure style="margin-top: 2rem;">
+            <img src="assets/world-chronometer.jpg" width="1500" height="2250" alt="World-Chronometer patent diagram" loading="lazy" style="width: 100%; height: auto; max-height: 340px; object-fit: cover;">
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 5: SCHEMA & QUERIES -->
+    <section class="frame section-gap" id="schema">
+      <div>
+        <h2>Database Tables &amp; SQL Queries</h2>
+        <p style="color: var(--muted); margin-top: 0.5rem; margin-bottom: 2rem;">
+          The Turso schema is automatically created on the first sync cycle. Pre-aggregated tables allow instant queries without scanning raw segments.
+        </p>
+      </div>
+
+      <div class="schema-grid">
+        <div class="entrance">
+          <h3>Cloud Tables</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Table</th>
+                  <th>Grain</th>
+                  <th>Lifecycle</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>segments</code></td>
+                  <td>One row per usage slice</td>
+                  <td>Raw segments pruned after 90 days</td>
+                </tr>
+                <tr>
+                  <td><code>batches</code></td>
+                  <td>One row per upload batch</td>
+                  <td>Replay &amp; idempotency protection</td>
+                </tr>
+                <tr>
+                  <td><code>devices</code></td>
+                  <td>One row per connected machine</td>
+                  <td>UUID, first seen, last sync</td>
+                </tr>
+                <tr>
+                  <td><code>daily_app</code></td>
+                  <td>One row per day × app</td>
+                  <td>Aggregated, kept indefinitely</td>
+                </tr>
+                <tr>
+                  <td><code>daily_unique</code></td>
+                  <td>One row per calendar day</td>
+                  <td>Union interval active seconds</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="entrance">
+          <h3>Aggregation Columns</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Column</th>
+                  <th>Table</th>
+                  <th>Meaning</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>merged_seconds</code></td>
+                  <td><code>daily_app</code></td>
+                  <td>Union of app intervals across all devices</td>
+                </tr>
+                <tr>
+                  <td><code>combined_seconds</code></td>
+                  <td><code>daily_app</code></td>
+                  <td>Raw sum of app usage time</td>
+                </tr>
+                <tr>
+                  <td><code>unique_active_seconds</code></td>
+                  <td><code>daily_unique</code></td>
+                  <td>Global active union (&le; 86,400s per day)</td>
+                </tr>
+                <tr>
+                  <td><code>overlap_seconds</code></td>
+                  <td><code>daily_unique</code></td>
+                  <td>Time two devices ran simultaneously</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabbed SQL queries -->
+      <div class="query-tabs-wrap entrance">
+        <h3>Sample SQL Queries</h3>
+        <p style="color: var(--muted); margin-top: 0.25rem; margin-bottom: 1rem;">
+          Use these queries in web dashboards or client-side fetchers with your read-only Turso token.
+        </p>
+
+        <div class="tab-nav">
+          <button class="tab-btn active" data-tab="tab-top-apps">Top Apps (30 Days)</button>
+          <button class="tab-btn" data-tab="tab-daily-totals">Daily Active Time</button>
+          <button class="tab-btn" data-tab="tab-heatmap">Calendar Heatmap</button>
+          <button class="tab-btn" data-tab="tab-devices">Device Attribution</button>
+        </div>
+
+        <div class="tab-pane active" id="tab-top-apps">
+          <pre><code>-- Top apps ranked by merged wall-clock hours (last 30 days)
+SELECT app_name,
+       SUM(merged_seconds)   / 3600.0 AS hours,
+       SUM(combined_seconds) / 3600.0 AS raw_usage_hours
+FROM daily_app
+WHERE activity_date >= date('now', '-30 days')
+GROUP BY app_name
+ORDER BY hours DESC;</code></pre>
+        </div>
+
+        <div class="tab-pane" id="tab-daily-totals">
+          <pre><code>-- Daily active hours and multi-device overlap (last 30 days)
+SELECT activity_date,
+       unique_active_seconds / 3600.0 AS active_hours,
+       overlap_seconds       / 3600.0 AS overlap_hours
+FROM daily_unique
+ORDER BY activity_date DESC
+LIMIT 30;</code></pre>
+        </div>
+
+        <div class="tab-pane" id="tab-heatmap">
+          <pre><code>-- Activity intensity for GitHub-style activity heatmaps (90 days)
+SELECT activity_date,
+       unique_active_seconds
+FROM daily_unique
+WHERE activity_date >= date('now', '-90 days')
+ORDER BY activity_date ASC;</code></pre>
+        </div>
+
+        <div class="tab-pane" id="tab-devices">
+          <pre><code>-- Segment count and recorded hours per machine (raw table)
+SELECT device_id,
+       COUNT(*)                     AS segments,
+       SUM(duration_seconds)/3600.0 AS hours
+FROM segments
+WHERE activity_date >= date('now', '-30 days')
+GROUP BY device_id;</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 6: FAQ (Question index, one answer) -->
+    <section class="frame section-gap" id="faq">
+      <div>
+        <h2>Frequently Answered</h2>
+        <p style="color: var(--muted); margin-top: 0.5rem; margin-bottom: 2.5rem;">
+          Architectural details and common operational considerations.
+        </p>
+      </div>
+
+      <div class="faq-index-layout" data-ui>
+        <div class="faq-questions-col entrance">
+          <div class="faq-q-item active" data-faq="faq1">
+            <span class="faq-bullet"></span>
+            <span>Where is tracking data stored?</span>
+          </div>
+          <div class="faq-q-item" data-faq="faq2">
+            <span class="faq-bullet"></span>
+            <span>What privacy guarantees exist?</span>
+          </div>
+          <div class="faq-q-item" data-faq="faq3">
+            <span class="faq-bullet"></span>
+            <span>How does idle detection operate?</span>
+          </div>
+          <div class="faq-q-item" data-faq="faq4">
+            <span class="faq-bullet"></span>
+            <span>How does multi-machine merge work?</span>
+          </div>
+          <div class="faq-q-item" data-faq="faq5">
+            <span class="faq-bullet"></span>
+            <span>How do I permanently delete an app?</span>
+          </div>
+        </div>
+
+        <div class="faq-answer-pane entrance">
+          <p id="faq-current-answer">
+            Tracking is local by default in SQLite (~/.local/share/atw/activity.db). Cloud sync is strictly optional and targets your own self-hosted or managed Turso database.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 7: ARCHIVAL CHRONOMETRY GALLERY -->
+    <section class="frame section-gap">
+      <div>
+        <h2>Horology &amp; Precision Records</h2>
+        <p style="color: var(--muted); margin-top: 0.5rem;">
+          Archival precision instruments from public collections representing exact temporal measurement.
+        </p>
+      </div>
+
+      <div class="archival-gallery-strip">
+        <figure class="gallery-feature-card entrance">
+          <img src="assets/london-greenwich-royal-greenwich-observatory-2016-4745.jpg" width="1920" height="2711" alt="Shepherd gate clock at the Royal Greenwich Observatory" loading="lazy">
+          <figcaption class="gallery-card-body">
+            <span class="gallery-card-title">Shepherd Gate Clock</span>
+            <span class="gallery-card-meta">Royal Greenwich Observatory, Dietmar Rabich</span>
+          </figcaption>
+        </figure>
+
+        <figure class="gallery-feature-card entrance">
+          <img src="assets/1928-movado-ermeto-chronometre.jpg" width="1920" height="929" alt="1928 Movado Ermeto chronomètre" loading="lazy">
+          <figcaption class="gallery-card-body">
+            <span class="gallery-card-title">Movado Ermeto Chronometer</span>
+            <span class="gallery-card-meta">Archival chronometer pocket piece, 1928</span>
+          </figcaption>
+        </figure>
+
+        <figure class="gallery-feature-card entrance">
+          <img src="assets/j-b-gooding-manufacture-of-chronometer-balances.jpg" width="1920" height="2801" alt="J. B. Gooding Manufacture of Chronometer-Balances" loading="lazy">
+          <figcaption class="gallery-card-body">
+            <span class="gallery-card-title">Balance Wheel Manufacture</span>
+            <span class="gallery-card-meta">Department of the Interior Patent Office, 1874</span>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+  </main>
+
+  <!-- FOOTER (A single quiet line) -->
+  <footer class="frame quiet-footer-wrap">
+    <div class="footer-credits-block">
+      <p class="credits">
+        Pictures and footage: <a href="https://commons.wikimedia.org/wiki/File:Montreal_Clock_Tower_clock_mechanism.ogv">“Montreal Clock Tower clock mechanism”</a> by Andy Mabbett, <a href="https://creativecommons.org/licenses/by-sa/4.0">CC BY-SA 4.0</a>, via Wikimedia Commons; <a href="https://commons.wikimedia.org/wiki/File:J._B._Gooding_Manufacture_of_Chronometer-Balances_-_DPLA_-_cb53dff8cff97551277dd275ceb3fc2c_(page_1).jpg">“J. B. Gooding Manufacture of Chronometer-Balances”</a> by Department of the Interior. Patent Office. (1849 - 1925), <a href="https://creativecommons.org/publicdomain/mark/1.0/">public domain</a>, via Wikimedia Commons; <a href="https://commons.wikimedia.org/wiki/File:World-Chronometer_-_DPLA_-_02e734cbc0a86a770ffce298499418e2_(page_1).jpg">“World-Chronometer”</a> by Agnew, Walter F, <a href="https://creativecommons.org/publicdomain/mark/1.0/">public domain</a>, via Wikimedia Commons; <a href="https://commons.wikimedia.org/wiki/File:London,_Greenwich,_Royal_Greenwich_Observatory_--_2016_--_4745-6-8.jpg">“London, Greenwich, Royal Greenwich Observatory -- 2016 -- 4745-6-8”</a> by Dietmar Rabich, <a href="https://creativecommons.org/licenses/by-sa/4.0">CC BY-SA 4.0</a>, via Wikimedia Commons; <a href="https://commons.wikimedia.org/w/index.php?curid=108327533">“1928 Movado Ermeto chronomètre”</a> by Jafd88, <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>, via Wikimedia Commons.
+      </p>
+    </div>
+
+    <div class="quiet-footer-line">
+      <div>Dev Activity Watcher documentation</div>
+      <div class="quiet-footer-centre">
+        <a href="https://github.com/dhirajaryaa/Dev-Activity-Watcher">Source Code</a>
+        <a href="#database-setup">Turso Setup</a>
+        <a href="#schema">Schema</a>
+      </div>
+      <div class="quiet-footer-right">
+        <span>MIT License · Omarchy Linux</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/site.js"></script>
+</body>
+</html>
