@@ -247,8 +247,7 @@ pub fn load_or_init(path: Option<&Path>) -> Result<Config> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, CONFIG_TEMPLATE)?;
-        restrict_permissions(&path);
+        create_private(&path, CONFIG_TEMPLATE)?;
         tracing::info!(target: "atw", path = %path.display(), "wrote default config");
         return Ok(Config::default());
     }
@@ -339,12 +338,42 @@ fn replace_setting(path: &Path, dotted_key: &str, formatted: &str) -> Result<()>
     // Refuse to write something that no longer parses.
     let _check: Config =
         toml::from_str(&text).map_err(|e| AtwError::Toml(e, path.to_path_buf()))?;
+    // The file may contain the cloud token in plain text: replace it through
+    // a temp file that is owner-only (0600) from the moment it is created, so
+    // the token is never briefly readable by other local accounts.
     let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text)?;
-    restrict_permissions(&tmp);
+    // Drop any leftover temp file so its mode comes from open(), not from it.
+    let _ = std::fs::remove_file(&tmp);
+    create_private(&tmp, &text)?;
     std::fs::rename(&tmp, path)?;
-    // The file may contain the cloud token in plain text.
     restrict_permissions(path);
+    Ok(())
+}
+
+/// Create `path` with owner-only permissions (0600) at open time and write
+/// `text` into it. Used for the config file, which can hold the cloud token:
+/// whatever the process umask is, the file never exists in a wider mode.
+fn create_private(path: &Path, text: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?;
+        // open(2) masks the mode with the umask; the file is still empty
+        // here, so force 0600 before any byte of content is written.
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, text)?;
+        restrict_permissions(path);
+    }
     Ok(())
 }
 
@@ -531,6 +560,53 @@ mod tests {
         let path = dir.join("config.toml");
         load_or_init(Some(&path)).unwrap();
         set_value(&path, "sync.token", "secret").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_value_temp_file_is_never_wider_than_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("atw-cfg-tmp-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[tracking]\nenabled = true\n").unwrap();
+        // A leftover temp file from an older version sits at 0644.
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, "stale").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        set_value(&path, "sync.token", "secret").unwrap();
+
+        // The leftover temp file is replaced (recreated owner-only), the
+        // result is owner-only, and no temp file is left behind.
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!tmp.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_value_replaces_wide_leftover_temp() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("atw-cfg-tmp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[tracking]\nenabled = true\n").unwrap();
+        // Simulate a leftover temp file left wide-open by an older version.
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, "stale").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        set_value(&path, "sync.token", "secret").unwrap();
+
+        // The stale wide file is gone and the result is owner-only.
+        assert!(!tmp.exists());
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         std::fs::remove_dir_all(&dir).unwrap();
