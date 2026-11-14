@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -75,9 +76,18 @@ pub fn write_status_file(path: &Path, status: &Status) -> Result<()> {
     let json = serde_json::to_string_pretty(status)?;
     let tmp = path.with_extension("json.tmp");
     {
-        let mut file = std::fs::File::create(&tmp)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
         file.write_all(json.as_bytes())?;
         file.sync_all()?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
     }
     std::fs::rename(&tmp, path)?;
     Ok(())
