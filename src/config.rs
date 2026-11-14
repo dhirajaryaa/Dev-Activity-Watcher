@@ -341,6 +341,7 @@ fn replace_setting(path: &Path, dotted_key: &str, formatted: &str) -> Result<()>
         toml::from_str(&text).map_err(|e| AtwError::Toml(e, path.to_path_buf()))?;
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, text)?;
+    restrict_permissions(&tmp);
     std::fs::rename(&tmp, path)?;
     // The file may contain the cloud token in plain text.
     restrict_permissions(path);
